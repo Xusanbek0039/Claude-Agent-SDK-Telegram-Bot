@@ -4,7 +4,8 @@ Telegram orqali topshiriq berasiz → Claude motion video yasaydi, caption yozad
 
 ```
 Telegram → app/bot.py → app/agent.py (Claude Agent SDK)
-                           ├─ create_motion_video  → app/video.py (Pillow + ffmpeg, 1080x1920)
+                           ├─ create_motion_video  → app/video.py (Pillow + ffmpeg, 1080x1920, emoji)
+                           │                         + app/tts.py (VoiceLab diktor ovozi)
                            ├─ request_publish      → ✅/❌ tugmalar → app/instagram.py (Graph API)
                            └─ get_instagram_account
 ```
@@ -39,7 +40,7 @@ Telegram ID'ingizni bilish uchun botga `/id` yozing va uni `ALLOWED_USER_IDS` ga
 
 1. Loyihani GitHub'ga yuklang (`.env` fayli `.gitignore` da, u yuklanmaydi).
 2. Render → **New → Blueprint** → repo'ni tanlang. `render.yaml` avtomatik o'qiladi.
-3. Environment bo'limida quyidagilarni kiriting: `TELEGRAM_BOT_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ALLOWED_USER_IDS`, `IG_USER_ID`, `IG_ACCESS_TOKEN`.
+3. Environment bo'limida quyidagilarni kiriting: `TELEGRAM_BOT_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `VOICELAB_API_KEY`, `ALLOWED_USER_IDS`, `IG_USER_ID`, `IG_ACCESS_TOKEN`.
 4. Deploy. Webhook `RENDER_EXTERNAL_URL/telegram` ga avtomatik o'rnatiladi.
 
 > Free plan: 15 daqiqa harakatsizlikdan keyin servis uxlaydi (birinchi xabarga javob ~1 daqiqa kechikadi) va 512 MB RAM video render uchun kam bo'lishi mumkin. Shu sabab `starter` plan tavsiya qilinadi.
