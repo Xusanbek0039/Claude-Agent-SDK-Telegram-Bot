@@ -65,8 +65,8 @@ async def _keep_typing(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None
         await asyncio.sleep(4)
 
 
-# Agent bergan savollar: qid -> (savol, variantlar)
-questions: dict[str, tuple[str, list[str]]] = {}
+# Agent bergan savollar: qid -> (savol, tugma matnlari, agentga yuboriladigan qiymatlar)
+questions: dict[str, tuple[str, list[str], list[str]]] = {}
 
 
 async def _run_agent(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -91,10 +91,15 @@ async def _run_agent(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE
             chat_id, f"📤 Instagram'ga chiqaraymi?\n\n{caption}", reply_markup=keyboard
         )
 
-    async def ask(question: str, options: list[str]) -> None:
+    async def send_audio(data: bytes, title: str) -> None:
+        await bot.send_audio(chat_id, data, title=title, filename="namuna.mp3",
+                             read_timeout=60, write_timeout=60)
+
+    async def ask(question: str, options: list[str], values: list[str] | None, cols: int) -> None:
         qid = uuid.uuid4().hex[:8]
-        questions[qid] = (question, options)
-        rows = [[InlineKeyboardButton(o, callback_data=f"ask:{qid}:{i}")] for i, o in enumerate(options)]
+        questions[qid] = (question, options, values or options)
+        buttons = [InlineKeyboardButton(o, callback_data=f"ask:{qid}:{i}") for i, o in enumerate(options)]
+        rows = [buttons[i : i + cols] for i in range(0, len(buttons), cols)]
         rows.append([InlineKeyboardButton("🎲 O'zing tanla", callback_data=f"ask:{qid}:auto")])
         await bot.send_message(
             chat_id, f"❓ {question}\n\n(Tugmani bosing yoki o'z variantingizni yozing)",
@@ -104,7 +109,7 @@ async def _run_agent(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE
     typing = asyncio.create_task(_keep_typing(context, chat_id))
     try:
         reply = await agent.run(
-            chat_id, text, agent.ChatIO(send_video, send_photo, send_publish_request, ask)
+            chat_id, text, agent.ChatIO(send_video, send_photo, send_audio, send_publish_request, ask)
         )
     except Exception as e:
         log.exception("Agent xatosi")
@@ -133,9 +138,12 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if entry is None:
         await query.edit_message_reply_markup(None)
         return
-    question, options = entry
-    answer = "O'zing eng yaxshisini tanla" if choice == "auto" else options[int(choice)]
-    await query.edit_message_text(f"❓ {question}\n\n✅ {answer}")
+    question, options, values = entry
+    if choice == "auto":
+        label = answer = "O'zing eng yaxshisini tanla"
+    else:
+        label, answer = options[int(choice)], values[int(choice)]
+    await query.edit_message_text(f"❓ {question}\n\n✅ {label}")
     await _run_agent(update.effective_chat.id, f"[{question}] javobim: {answer}", context)
 
 

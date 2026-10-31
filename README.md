@@ -58,6 +58,22 @@ Telegram ID'ingizni bilish uchun botga `/id` yozing va uni `ALLOWED_USER_IDS` ga
 
 Agar "Instagram Login" usuli bilan token olgan bo'lsangiz, `IG_GRAPH_HOST=graph.instagram.com` qiling.
 
+## Video uslublari
+
+| Uslub | Ko'rinish |
+|---|---|
+| `terminal` | qora fon, yashil mono shrift, kod oynalari, kartochkalar, pastda so'zma-so'z subtitr |
+| `glass` | och fon, rangli xira dog'lar, oq kartochkalar, o'ng pastda qahramon |
+| `slides` | katta qalin sarlavhalar, raqamli ro'yxatlar, `01/10` hisoblagich |
+| `kinetic` | qora fon, katta matn kursor bilan yoziladi |
+| `classic` | rangli gradient, to'lqin, setka va bokeh fonlar |
+
+Elementlar: `cards`, `list`, `code`, `number`, `chips`. Shriftlar (Inter, JetBrains Mono, Anton) `app/fonts` papkasida, SIL Open Font License asosida.
+
+## Shaxsiy avatar
+
+`husanbek/` papkasidagi rasmlardan OpenAI (`gpt-image-2`) 3D qahramon-stikerlar yasaydi. Har bir poza `avatar_cache/` ga saqlanadi va qayta pul to'lanmaydi. `husanbek/` papkasi `.gitignore` da. Render'da yangi pozalar yaratilishi kerak bo'lsa, rasmlarni xususiy (private) repo orqali yuklang yoki `avatar_cache/` dagi tayyor pozalarni commit qiling.
+
 ## Buyruqlar
 
 - `/start`: yo'riqnoma

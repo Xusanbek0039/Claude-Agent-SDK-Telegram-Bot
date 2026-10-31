@@ -22,7 +22,16 @@ from claude_agent_sdk import (
 )
 
 from . import config, images, instagram, tts
-from .video import BG_STYLES, Scene, render_motion_video
+from .video import (
+    BG_STYLES,
+    ELEMENT_TYPES,
+    THEME_NAMES,
+    Scene,
+    VideoSpec,
+    narration_words,
+    render_motion_video,
+    strip_markup,
+)
 
 log = logging.getLogger(__name__)
 
@@ -30,39 +39,49 @@ SYSTEM_PROMPT = """Sen foydalanuvchining Instagram akkauntini boshqaradigan ijod
 motion-dizaynersan. Foydalanuvchi bilan o'zbek tilida, qisqa va do'stona gaplash.
 Javoblaring Telegram'da ko'rsatiladi.
 
-## Ish tartibi
-1. Foydalanuvchi umumiy topshiriq bersa ("kofe haqida video qil", "shunaqa video tayyorla"),
-   o'zing ijodiy g'oyalar o'ylab top va ask_user orqali tugmali so'rovnoma qil:
-   - avval 3-4 ta qisqa video g'oyasi (har biri 1 qator, emoji bilan);
-   - keyin fon uslubi (masalan: "🌈 Gradient", "🌊 To'lqinlar", "✨ Bokeh", "🔲 Nuqtali setka",
-     "🖼 AI rasm fon"), va kerak bo'lsa qahramon/stiker kerakmi yoki diktor ovozi
-     (erkak/ayol).
-   Ko'pi bilan 2-3 ta savol ber; foydalanuvchi "o'zing tanla" desa, o'zing hal qil.
-   ask_user'dan keyin javobingni qisqa yakunla va foydalanuvchi tanlovini kut: tanlov keyingi
-   xabar bo'lib keladi.
-2. Topshiriq aniq bo'lsa, savolsiz to'g'ridan-to'g'ri video yasa.
+## Ish tartibi (video so'ralganda)
+Har bir savoldan keyin javobingni qisqa yakunla va tanlovni kut: u keyingi xabar bo'lib keladi.
+1. Topshiriq umumiy bo'lsa ("kofe haqida video", "shunaqa video qil"): o'zing 3-4 ta ijodiy
+   g'oya o'ylab top va ask_user bilan tanlat (har biri 1 qator, emoji bilan).
+2. Orqa fon / uslubni ask_user bilan so'ra (agar foydalanuvchi aytmagan bo'lsa):
+   "🖥 Terminal — qora, yashil kod uslubi", "🪟 Glass — och, qahramonli",
+   "📑 Slaydlar — katta sarlavha, ro'yxatlar", "⌨️ Kinetik matn — qora, yoziluvchi matn",
+   "🌈 Rangli gradient".
+3. Diktor ovozini ask_voice bilan so'ra (faqat o'zbekcha ovozlar). Undan oldin mavzuga mos
+   3 tasining namunasini send_voice_samples bilan yubor. Foydalanuvchi ovozsiz desa - narration yo'q.
+4. Keyin videoni yasa. "O'zing tanla" deyilsa, o'zing eng yaxshisini tanla.
+Topshiriq to'liq aniq bo'lsa (uslub va ovoz aytilgan), savolsiz yasa.
 
-## Video yasash (create_motion_video)
-- 3-6 sahna, har sahnada boshqacha fon: uslub (bg_style) va ranglarni sahnadan sahnaga
-  o'zgartir, video bir xil ko'rinmasin. Uslublar: gradient, diagonal, radial, waves, grid,
-  bokeh, image (AI fon rasmi - avval generate_image kind=background).
-- emoji: har sahnaga mos bitta katta animatsiyali emoji (☕ 🔥 🚀 💡 ...).
-- stickers: 1-3 ta suzib yuruvchi emoji yoki generate_image(kind=sticker) natijasi.
-- character: generate_image(kind=character) bilan yaratilgan qahramon (emoji o'rniga katta bo'lib
-  chiqadi). Bitta qahramonni bir necha sahnada ishlatish brend uchun yaxshi.
-- title: qisqa, kuchli sarlavha (5-7 so'z), ichida 1 ta emoji bo'lishi mumkin.
-- narration: diktor o'qiydigan matn (1-2 jumla, emoji'siz, raqamlarni so'z bilan yoz).
-  Ovozsiz video so'ralsa, bo'sh qoldir.
-- Ovozlar (voice_id): voice_fa56cecf-9b0b-45ba-9ec3-494efb5b301f Javohir (erkak, default),
-  voice_8bae02c6-d078-4757-9d62-0fce6da23cf7 Amir (erkak, hikoyachi),
-  voice_5e592ada-eca8-42e3-98fa-469c1c8fc999 Botir (erkak, energik),
-  voice_4ef06e6b-2229-4023-ad66-c2a7a2b736ff Madina (ayol, yumshoq),
-  voice_7b350d91-4e56-4bc3-869c-8cd6ba646c3c Gulya (ayol, quvnoq).
+## Video tuzilishi (create_motion_video) — namunalar uslubida
+- theme: terminal | glass | slides | kinetic | classic. Butun video bitta uslubda.
+- handle: foydalanuvchi nikneymi (bilmasang so'ramasdan bo'sh qoldir), label: mavzu so'zi.
+- 5-10 sahna, har sahna 1 fikr. Har sahnada narration (diktor matni, 1-2 jumla, emoji'siz,
+  raqamlarni so'z bilan). So'zma-so'z subtitr avtomatik chiqadi.
+- heading: qisqa sarlavha (3-7 so'z). *yulduzcha* ichidagi so'z urg'u rangida chiqadi:
+  "Ular *buzishmaydi* — qidiradi". narration'da ham *so'z* bilan urg'u berish mumkin.
+- elements (sahnaga 0-2 ta) — namunalardagidek vizual bloklar:
+  * cards: {"type":"cards","items":[{"icon":"⚡","title":"Tez","text":"izoh"}]} (1-4 ta)
+  * list: {"type":"list","items":["1-qadam","2-qadam"]} (raqamli ro'yxat, 2-6 ta)
+  * code: {"type":"code","title":"app.js","lines":["$ npm run build","// izoh"]} (yoziladi)
+  * number: {"type":"number","value":"13,889","suffix":"+","label":"izoh"} (sanab o'sadi)
+  * chips: {"type":"chips","items":["#teg","OWASP"]}
+- emoji: sahnaga katta animatsiyali emoji; stickers: 1-3 ta suzuvchi emoji yoki image_id.
+- character: qahramon image_id (glass uslubida o'ng pastda, boshqalarida markazda).
+- variant: slides uchun "light" (och slayd), kinetic uchun yorug'lik rangi "#ff6a00".
+- accent: sahna urg'u rangi (hex), ixtiyoriy. classic uslubida bg_style va bg_colors ber,
+  sahnadan sahnaga o'zgartir.
+Uslublar bo'yicha maslahat: terminal - texnologiya/xavfsizlik/kod; glass - ta'lim, qahramon
+bilan; slides - qadamma-qadam qo'llanma, 01/10 ko'rinish; kinetic - his-tuyg'u, she'riy matn.
+
+## Shaxsiy emoji / qahramon
+Qahramon yoki emoji-stiker kerak bo'lsa, AVVAL avatar_sticker ishlat: u foydalanuvchining o'z
+rasmlaridan 3D multfilm uslubidagi qahramon yasaydi (masalan: "thinking, hand on chin",
+"pointing up, excited", "thumbs up, smiling", "surprised, hands on cheeks", "waving hello").
+Bitta videoda 2-4 xil poza ishlat (har sahnada boshqa poza = jonli video). Pozalar keshlanadi,
+qayta yaratilmaydi. Avatar ishlamasa, generate_image yoki oddiy emoji ishlat.
 
 ## Rasmlar (generate_image)
-Faqat OpenAI ulangan bo'lsa ishlaydi. Promptni ingliz tilida, aniq yoz (personaj tashqi
-ko'rinishi, kiyimi, uslubi). Har bir rasm pullik va ~20-60 soniya oladi: keragidan ortiq yaratma
-(odatda 1 qahramon + 0-2 fon).
+Promptni ingliz tilida aniq yoz. Har rasm pullik va ~20-60 soniya oladi: keragidan ortiq yaratma.
 
 ## Instagram
 - request_publish: chiqarishdan oldin har doim tasdiq so'ra. Caption: hook, qisqa matn,
@@ -71,7 +90,8 @@ ko'rinishi, kiyimi, uslubi). Har bir rasm pullik va ~20-60 soniya oladi: keragid
 
 SERVER_NAME = "ig"
 TOOL_NAMES = [
-    "ask_user", "generate_image", "create_motion_video", "request_publish", "get_instagram_account",
+    "ask_user", "ask_voice", "send_voice_samples", "avatar_sticker", "generate_image",
+    "create_motion_video", "request_publish", "get_instagram_account",
 ]
 
 
@@ -99,8 +119,10 @@ class ChatIO:
 
     send_video: Callable[[Path, str], Awaitable[None]]
     send_photo: Callable[[Path, str], Awaitable[None]]
+    send_audio: Callable[[bytes, str], Awaitable[None]]
     send_publish_request: Callable[[str, Path, str], Awaitable[None]]
-    ask: Callable[[str, list[str]], Awaitable[None]]
+    # (savol, tugma matnlari, agentga qaytadigan qiymatlar yoki None, ustunlar soni)
+    ask: Callable[[str, list[str], list[str] | None, int], Awaitable[None]]
 
 
 def _text(msg: str) -> dict[str, Any]:
@@ -108,12 +130,15 @@ def _text(msg: str) -> dict[str, Any]:
 
 
 async def _narrate(scenes: list[Scene], voice_id: str, language: str) -> tuple[bytes, str]:
-    """Synthesize each scene's narration and stretch scene durations to fit."""
-    clips, provider = await tts.synthesize_many([s.narration for s in scenes], voice_id, language)
+    """Synthesize each scene's narration, stretch durations to fit and time the caption words."""
+    texts = [strip_markup(s.narration) for s in scenes]
+    clips, provider = await tts.synthesize_many(texts, voice_id, language)
     placed, start = [], 0.0
     for scene, clip in zip(scenes, clips):
         if clip:
-            scene.duration = max(scene.duration, tts.wav_duration(clip) + 0.8)
+            seconds = tts.wav_duration(clip)
+            scene.duration = max(scene.duration, seconds + 0.9)
+            scene.words = narration_words(scene.narration, 0.3, seconds)
             placed.append((start + 0.3, clip))
         start += scene.duration
     return tts.build_track(placed, start), provider
@@ -124,53 +149,138 @@ def _image_ref(value: str) -> str | Path:
     return generated_images.get(value.strip(), value)
 
 
+def _voice_label(v: dict) -> str:
+    icon = "🆓" if v.get("free") else ("👩" if v.get("gender") == "female" else "👨" if v.get("gender") == "male" else "🎙")
+    name = v["name"].split("—")[0].strip()
+    desc = v.get("description", "")
+    return f"{icon} {name}" + (f" · {desc[:18]}" if desc and not v.get("free") else "")
+
+
+ELEMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "enum": list(ELEMENT_TYPES)},
+        "items": {"type": "array", "description": "cards: [{icon,title,text}], list/chips: [string]"},
+        "title": {"type": "string", "description": "code: window title"},
+        "lines": {"type": "array", "items": {"type": "string"}, "description": "code: lines"},
+        "value": {"type": "string", "description": "number: e.g. '13,889'"},
+        "prefix": {"type": "string"},
+        "suffix": {"type": "string"},
+        "label": {"type": "string", "description": "number: caption under the number"},
+    },
+    "required": ["type"],
+}
+
 SCENE_SCHEMA = {
     "type": "object",
     "properties": {
-        "title": {"type": "string", "description": "Short punchy title, may contain one emoji"},
-        "subtitle": {"type": "string", "description": "Optional smaller text"},
-        "duration": {"type": "number", "description": "Minimum seconds, 2-6 (extended to fit narration)"},
-        "emoji": {"type": "string", "description": "One big animated emoji (ignored if character is set)"},
-        "character": {"type": "string", "description": "image_id of a generated character to show big"},
-        "stickers": {
-            "type": "array", "items": {"type": "string"},
-            "description": "Up to 3 floating stickers: emoji characters or generated sticker image_ids",
-        },
-        "narration": {"type": "string", "description": "Voice-over text for this scene (no emoji)"},
-        "bg_style": {"type": "string", "enum": list(BG_STYLES)},
-        "bg_colors": {
-            "type": "array", "items": {"type": "string"},
-            "description": "Two hex colors for the background, e.g. ['#0f172a', '#2563eb']",
-        },
-        "bg_image": {"type": "string", "description": "image_id of a generated background (bg_style=image)"},
-        "accent": {"type": "string", "description": "Accent hex color for shapes, underline, progress bar"},
+        "heading": {"type": "string", "description": "Short heading; wrap accent words in *stars*"},
+        "subheading": {"type": "string", "description": "Optional smaller text"},
+        "narration": {"type": "string", "description": "Voice-over text (no emoji); *stars* accent caption words"},
+        "duration": {"type": "number", "description": "Minimum seconds (extended to fit narration)"},
+        "elements": {"type": "array", "items": ELEMENT_SCHEMA, "description": "0-2 visual blocks"},
+        "emoji": {"type": "string", "description": "One big animated emoji"},
+        "character": {"type": "string", "description": "image_id of a character / avatar sticker"},
+        "stickers": {"type": "array", "items": {"type": "string"}, "description": "Up to 3: emoji or image_ids"},
+        "variant": {"type": "string", "description": "slides: 'light'; kinetic: glow hex color"},
+        "accent": {"type": "string", "description": "Accent hex color for this scene"},
+        "bg_style": {"type": "string", "enum": list(BG_STYLES), "description": "classic theme only"},
+        "bg_colors": {"type": "array", "items": {"type": "string"}, "description": "classic: two hex colors"},
+        "bg_image": {"type": "string", "description": "image_id of a generated background"},
     },
-    "required": ["title"],
 }
 
 
 def _build_server(io: ChatIO):
     @tool(
         "ask_user",
-        "Send the user a question with tappable option buttons (a quick poll). "
-        "The user's choice arrives as their next message, so end your turn after calling this. "
-        "A 'let the assistant decide' button is added automatically; do not include one.",
+        "Send the user a question with tappable option buttons (a quick poll). The user's choice "
+        "arrives as their next message, so end your turn after calling this. A 'let the assistant "
+        "decide' button is added automatically; do not include one.",
         {
             "type": "object",
             "properties": {
                 "question": {"type": "string"},
                 "options": {
                     "type": "array", "items": {"type": "string"},
-                    "description": "2-6 short options (max ~40 chars each), emoji welcome",
+                    "description": "2-8 short options (max ~45 chars each), emoji welcome",
                 },
             },
             "required": ["question", "options"],
         },
     )
     async def ask_user(args: dict[str, Any]) -> dict[str, Any]:
-        options = [o.strip()[:60] for o in args["options"] if o.strip()][:6]
-        await io.ask(args["question"], options)
+        options = [o.strip()[:64] for o in args["options"] if o.strip()][:8]
+        await io.ask(args["question"], options, None, 1)
         return _text("Savol yuborildi. Javobingni qisqa yakunla va foydalanuvchi tanlovini kut.")
+
+    @tool(
+        "ask_voice",
+        "Show the user buttons with ALL available Uzbek narrator voices (VoiceLab + free voices) to pick "
+        "one. The choice (with voice_id) arrives as the next message; end your turn after calling this.",
+        {"type": "object", "properties": {"question": {"type": "string"}}},
+    )
+    async def ask_voice(args: dict[str, Any]) -> dict[str, Any]:
+        voices = await tts.list_uzbek_voices()
+        labels = [_voice_label(v) for v in voices]
+        values = [f"Ovoz: {v['name']} (voice_id={v['id']})" for v in voices]
+        await io.ask(args.get("question") or "🎙 Diktor ovozini tanlang", labels, values, 2)
+        return _text(f"{len(voices)} ta o'zbekcha ovoz tugmalari yuborildi. Tanlovni kut.")
+
+    @tool(
+        "send_voice_samples",
+        "Send short audio samples of up to 4 voices so the user can hear them before choosing. "
+        "Call with no ids to get the voice catalog (id, name, gender, description) without sending.",
+        {
+            "type": "object",
+            "properties": {"voice_ids": {"type": "array", "items": {"type": "string"}}},
+        },
+    )
+    async def send_voice_samples(args: dict[str, Any]) -> dict[str, Any]:
+        ids = args.get("voice_ids") or []
+        voices = await tts.list_uzbek_voices(fresh=bool(ids))
+        if not ids:
+            catalog = "\n".join(f"{v['id']} | {v['name']} | {v['gender'] or '-'} | {v['description']}" for v in voices)
+            return _text(f"O'zbekcha ovozlar:\n{catalog}")
+        by_id = {v["id"]: v for v in voices}
+        sent = []
+        for vid in ids[:4]:
+            v = by_id.get(vid)
+            if not v:
+                continue
+            try:
+                await io.send_audio(await tts.voice_sample(v), _voice_label(v))
+                sent.append(v["name"])
+            except Exception as e:
+                log.warning("Ovoz namunasi yuborilmadi (%s): %s", vid, e)
+        return _text(f"Namunalar yuborildi: {', '.join(sent) or 'hech biri'}.")
+
+    @tool(
+        "avatar_sticker",
+        "Create (or reuse from cache) a 3D cartoon sticker of the USER based on their own photos, in "
+        "the given pose/emotion. Returns an image_id for scene.character or stickers.",
+        {
+            "type": "object",
+            "properties": {"pose": {"type": "string", "description": "English pose + emotion, e.g. 'thumbs up, smiling'"}},
+            "required": ["pose"],
+        },
+    )
+    async def avatar_sticker(args: dict[str, Any]) -> dict[str, Any]:
+        pose = args["pose"]
+        cached = images.cached_avatar(pose)
+        if not cached and not images.avatar_available():
+            have = images.list_cached_avatars()
+            return _text("Yangi avatar yaratib bo'lmaydi (OPENAI_API_KEY yoki AVATAR_DIR rasmlari yo'q). "
+                         + (f"Keshdagi pozalar: {', '.join(have)}" if have else "Emoji ishlat."))
+        try:
+            path = cached or await images.avatar_sticker(pose)
+        except (images.ImageError, httpx.HTTPError) as e:
+            return _text(f"Avatar yaratilmadi: {e}")
+        image_id = f"avatar_{path.stem}"
+        generated_images[image_id] = path
+        if not cached:
+            await io.send_photo(path, f"🧑 Avatar: {pose}")
+        return _text(f"Avatar tayyor{' (keshdan)' if cached else ''}. image_id={image_id}")
 
     @tool(
         "generate_image",
@@ -200,16 +310,20 @@ def _build_server(io: ChatIO):
 
     @tool(
         "create_motion_video",
-        "Render a vertical 1080x1920 motion-graphics video with voice-over (Instagram Reels format) "
-        "and send it to the user. Returns a video_id.",
+        "Render a vertical 1080x1920 motion-graphics video with voice-over and word-by-word captions "
+        "(Instagram Reels format) and send it to the user. Returns a video_id.",
         {
             "type": "object",
             "properties": {
+                "theme": {"type": "string", "enum": list(THEME_NAMES)},
+                "handle": {"type": "string", "description": "Account handle shown in the frame, e.g. @name"},
+                "label": {"type": "string", "description": "Topic label (terminal header)"},
+                "captions": {"type": "boolean", "description": "Word-by-word captions (default true)"},
                 "scenes": {"type": "array", "items": SCENE_SCHEMA, "description": "Ordered scenes"},
                 "voice_id": {"type": "string", "description": "Voice id for narration"},
-                "language": {"type": "string", "description": "Narration language code: uz, ru, en"},
+                "language": {"type": "string", "description": "Narration language code (default uz)"},
             },
-            "required": ["scenes"],
+            "required": ["theme", "scenes"],
         },
     )
     async def create_motion_video(args: dict[str, Any]) -> dict[str, Any]:
@@ -218,18 +332,27 @@ def _build_server(io: ChatIO):
             colors = [c for c in s.get("bg_colors", []) if c][:2]
             style = s.get("bg_style", "gradient")
             scenes.append(Scene(
-                title=s["title"],
-                subtitle=s.get("subtitle", ""),
-                duration=max(1.5, min(8.0, float(s.get("duration", 3)))),
-                emoji=s.get("emoji", ""),
+                heading=s.get("heading") or s.get("title", ""),
+                subheading=s.get("subheading", ""),
                 narration=s.get("narration", "").strip(),
-                bg_style=style if style in BG_STYLES else "gradient",
-                bg_colors=tuple(colors) if len(colors) == 2 else ("#1e1b4b", "#7c3aed"),
-                accent=s.get("accent", "#facc15"),
-                bg_image=generated_images.get(s.get("bg_image", "")),
+                duration=max(1.5, min(10.0, float(s.get("duration", 3)))),
+                elements=[e for e in s.get("elements", []) if isinstance(e, dict)][:2],
+                emoji=s.get("emoji", ""),
                 character=generated_images.get(s.get("character", "")),
                 stickers=[_image_ref(x) for x in s.get("stickers", [])][:3],
+                variant=s.get("variant", ""),
+                accent=s.get("accent", ""),
+                bg_style=style if style in BG_STYLES else "gradient",
+                bg_colors=tuple(colors) if len(colors) == 2 else ("#1e1b4b", "#7c3aed"),
+                bg_image=generated_images.get(s.get("bg_image", "")),
             ))
+        theme = args.get("theme", "terminal")
+        spec = VideoSpec(
+            theme=theme if theme in THEME_NAMES else "terminal",
+            handle=args.get("handle", ""),
+            label=args.get("label", ""),
+            captions=args.get("captions", True),
+        )
         audio, note = None, ""
         if any(s.narration for s in scenes):
             try:
@@ -238,7 +361,7 @@ def _build_server(io: ChatIO):
             except (tts.TTSError, httpx.HTTPError, OSError) as e:
                 log.exception("TTS xatosi")
                 note = f" Ovoz qo'shilmadi ({e})."
-        path = await asyncio.to_thread(render_motion_video, scenes, audio)
+        path = await asyncio.to_thread(render_motion_video, scenes, spec, audio)
         video_id = path.stem
         videos[video_id] = path
         await io.send_video(path, f"🎬 Video tayyor (id: {video_id})")
@@ -276,7 +399,8 @@ def _build_server(io: ChatIO):
 
     return create_sdk_mcp_server(
         SERVER_NAME,
-        tools=[ask_user, generate_image, create_motion_video, request_publish, get_instagram_account],
+        tools=[ask_user, ask_voice, send_voice_samples, avatar_sticker, generate_image,
+               create_motion_video, request_publish, get_instagram_account],
     )
 
 
@@ -299,7 +423,7 @@ async def run(chat_id: int, user_text: str, io: ChatIO) -> str:
             permission_mode="dontAsk",
             setting_sources=[],
             resume=session.session_id,
-            max_turns=25,
+            max_turns=30,
         )
         result: ResultMessage | None = None
         async for message in query(prompt=user_text, options=options):

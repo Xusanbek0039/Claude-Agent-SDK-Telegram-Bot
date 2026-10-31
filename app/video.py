@@ -205,6 +205,19 @@ def _paste(frame: Image.Image, sprite: Image.Image, x: float, y: float, alpha: f
     frame.paste(sprite, (x + box[0], y + box[1]), sprite)
 
 
+def _text_alpha(img: Image.Image, xy: tuple, text: str, fnt, color: tuple, alpha: float, anchor: str = "la") -> None:
+    """Draw text with real transparency (ImageDraw ignores text alpha on RGB images)."""
+    if alpha <= 0.01 or not text:
+        return
+    if alpha >= 0.99 or img.mode == "RGBA":
+        ImageDraw.Draw(img).text(xy, text, font=fnt, fill=(*color[:3], int(255 * min(alpha, 1))), anchor=anchor)
+        return
+    left, top, right, bottom = fnt.getbbox(text, anchor=anchor)
+    spr = Image.new("RGBA", (right - left + 2, bottom - top + 2), (0, 0, 0, 0))
+    ImageDraw.Draw(spr).text((-left, -top), text, font=fnt, fill=(*color[:3], 255), anchor=anchor)
+    _paste(img, spr, xy[0] + left, xy[1] + top, alpha)
+
+
 def _rounded(size: tuple[int, int], radius: int, fill, outline=None, width: int = 2, shadow: bool = False) -> Image.Image:
     """Rounded card sprite, optionally with a soft drop shadow (sprite gets padding)."""
     pad = 40 if shadow else 0
@@ -423,7 +436,8 @@ class Background:
             mask = Image.new("L", (W, H), 255)
             mask.paste(Image.radial_gradient("L").resize((1700, 1700)), (int(W * 0.8) - 850, int(H * 0.78) - 850))
             layer = Image.new("RGBA", (W, H), (*theme.glow, 0))
-            layer.putalpha(mask.point(lambda v: max(0, 125 - v // 2)))
+            # radial_gradient chetida 181 (burchakda 255): chegarada alfa 0 bo'lsin
+            layer.putalpha(mask.point(lambda v: max(0, int(125 * (1 - v / 181)))))
             self.base.alpha_composite(layer)
             _vignette(self.base, 120)
         elif name == "glass":
@@ -704,7 +718,7 @@ class CodeBlock(Block):
                 break
             shown = line[:chars]
             chars -= len(line)
-            d.text((MARGIN + 30, y), shown, font=self.f, fill=(*self._color(line), int(255 * fade)))
+            _text_alpha(frame, (MARGIN + 30, y), shown, self.f, self._color(line), fade)
             cursor = (MARGIN + 30 + self.f.getlength(shown), y)
             y += self.lh
         if cursor and int(t * 2.5) % 2 == 0:
@@ -735,11 +749,10 @@ class NumberBlock(Block):
         else:
             txt = self.raw
         txt = f"{self.prefix}{txt}{self.suffix}"
-        d = ImageDraw.Draw(frame, "RGBA")
-        a = int(255 * fade * _ease_out((t - self.t0) / 0.3))
+        a = fade * _ease_out((t - self.t0) / 0.3)
         x = MARGIN if self.theme.align == "left" else W / 2
-        d.text((x, top + self.big_h / 2), txt, font=self.f, fill=(*self.theme.accent, a),
-               anchor="lm" if self.theme.align == "left" else "mm")
+        _text_alpha(frame, (x, top + self.big_h / 2), txt, self.f, self.theme.accent, a,
+                    "lm" if self.theme.align == "left" else "mm")
         if self.label:
             self.label.draw(frame, top + self.big_h + 10, t, fade)
 
@@ -827,7 +840,7 @@ class Captions:
             idx = 0
         return idx
 
-    def _line(self, d, grp, idx, x0, y, fade, hide_future: bool):
+    def _line(self, img, grp, idx, x0, y, fade, hide_future: bool):
         space = self.f.getlength(" ")
         x = x0
         last = None
@@ -841,7 +854,7 @@ class Captions:
                 color, a = self.theme.accent, 1.0
             else:
                 color, a = (self.theme.accent if acc else self.theme.fg), 1.0
-            d.text((x, y), w, font=self.f, fill=(*color, int(255 * a * fade)))
+            _text_alpha(img, (x, y), w, self.f, color, a * fade)
             wd = self.f.getlength(w)
             if i == idx:
                 last = (x, wd)
@@ -862,8 +875,8 @@ class Captions:
             if gi > 0:
                 prev = self.groups[gi - 1]
                 ptotal = sum(self.f.getlength(w) for w, _ in prev) + space * (len(prev) - 1)
-                self._line(d, prev, idx, (W - ptotal) / 2, 90, fade * 0.3, False)
-            end_x, _ = self._line(d, grp, idx, (W - total) / 2, 240, fade, True)
+                self._line(layer, prev, idx, (W - ptotal) / 2, 90, fade * 0.3, False)
+            end_x, _ = self._line(layer, grp, idx, (W - total) / 2, 240, fade, True)
             if int(t * 2.5) % 2 == 0:
                 d.rectangle((end_x - space + 12, 252, end_x - space + 44, 352), fill=(255, 45, 45, int(255 * fade)))
             layer = layer.rotate(6, resample=Image.BICUBIC)
@@ -873,12 +886,12 @@ class Captions:
         if self.mode == "top":
             shown = [(w, i) for w, i in grp if i <= idx]
             stotal = sum(self.f.getlength(w) for w, _ in shown) + space * (len(shown) - 1)
-            _, last = self._line(d, grp, idx, (W - stotal) / 2, 150, fade, True)
+            _, last = self._line(frame, grp, idx, (W - stotal) / 2, 150, fade, True)
             if last:
                 d.rounded_rectangle((last[0], 232, last[0] + last[1], 240), 4,
                                     fill=(*self.theme.accent, int(255 * fade)))
             return
-        self._line(d, grp, idx, (W - total) / 2, H - 300, fade, False)
+        self._line(frame, grp, idx, (W - total) / 2, H - 300, fade, False)
 
 
 # ---------- Sahna ----------

@@ -3,5 +3,7 @@ media/
 __pycache__/
 *.pyc
 .venv/
+venv/
 /namunalar
-/husanbek
+# Shaxsiy rasmlar (avatar uchun) - ommaviy repo'ga yuklanmaydi
+/husanbek/
