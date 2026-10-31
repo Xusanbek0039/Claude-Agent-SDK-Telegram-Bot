@@ -201,7 +201,8 @@ def _paste(frame: Image.Image, sprite: Image.Image, x: float, y: float, alpha: f
     box = (max(0, -x), max(0, -y), min(sprite.width, W - x), min(sprite.height, H - y))
     if box != (0, 0, sprite.width, sprite.height):
         sprite = sprite.crop(box)
-    frame.alpha_composite(_with_alpha(sprite, alpha), (x + box[0], y + box[1]))
+    sprite = _with_alpha(sprite, alpha)
+    frame.paste(sprite, (x + box[0], y + box[1]), sprite)
 
 
 def _rounded(size: tuple[int, int], radius: int, fill, outline=None, width: int = 2, shadow: bool = False) -> Image.Image:
@@ -358,6 +359,7 @@ def _grid(img: Image.Image, step: int, color: tuple) -> None:
 
 
 def _vignette(img: Image.Image, strength: int) -> None:
+    """Darken the edges (img must be RGBA)."""
     mask = Image.radial_gradient("L").resize((int(W * 1.5), int(H * 1.3)))
     mask = mask.crop(((mask.width - W) // 2, (mask.height - H) // 2,
                       (mask.width - W) // 2 + W, (mask.height - H) // 2 + H))
@@ -367,15 +369,17 @@ def _vignette(img: Image.Image, strength: int) -> None:
 
 
 @lru_cache(maxsize=16)
-def _blob(color: tuple, size: int = 760) -> Image.Image:
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    r = size // 2 - 150
-    ImageDraw.Draw(img).ellipse((size / 2 - r, size / 2 - r, size / 2 + r, size / 2 + r), fill=(*color, 150))
-    return img.filter(ImageFilter.GaussianBlur(110))
+def _blob(color: tuple, size: int = 1000) -> Image.Image:
+    mask = Image.new("L", (size, size), 0)
+    r = size // 2 - 330
+    ImageDraw.Draw(mask).ellipse((size / 2 - r, size / 2 - r, size / 2 + r, size / 2 + r), fill=170)
+    img = Image.new("RGBA", (size, size), (*color, 0))
+    img.putalpha(mask.filter(ImageFilter.GaussianBlur(105)))
+    return img
 
 
 def _two_color(mask: Image.Image, c1: tuple, c2: tuple) -> Image.Image:
-    return Image.composite(Image.new("RGB", (W, H), c2), Image.new("RGB", (W, H), c1), mask).convert("RGBA")
+    return Image.composite(Image.new("RGB", (W, H), c2), Image.new("RGB", (W, H), c1), mask)
 
 
 class Background:
@@ -404,17 +408,23 @@ class Background:
             else:
                 self.base = _two_color(Image.linear_gradient("L").resize((W, H)), c1, c2)
             return
+        self._themed_base(theme, index)
+        self.base = self.base.convert("RGB")
+
+    def _themed_base(self, theme: Theme, index: int) -> None:
+        name = theme.name
         self.base = Image.new("RGBA", (W, H), (*theme.bg, 255))
         if name == "terminal":
             _grid(self.base, 54, (*theme.accent, 9))
             _vignette(self.base, 150)
         elif name == "slides":
-            _grid(self.base, 90, (*theme.fg, 10))
+            _grid(self.base, 90, (*theme.fg, 7))
         elif name == "kinetic":
-            glow = Image.radial_gradient("L").resize((1500, 1500)).point(lambda v: max(0, 120 - v // 2))
-            layer = Image.new("RGBA", (1500, 1500), (*theme.glow, 0))
-            layer.putalpha(glow)
-            self.base.alpha_composite(layer, (W - 900, H - 1000))
+            mask = Image.new("L", (W, H), 255)
+            mask.paste(Image.radial_gradient("L").resize((1700, 1700)), (int(W * 0.8) - 850, int(H * 0.78) - 850))
+            layer = Image.new("RGBA", (W, H), (*theme.glow, 0))
+            layer.putalpha(mask.point(lambda v: max(0, 125 - v // 2)))
+            self.base.alpha_composite(layer)
             _vignette(self.base, 120)
         elif name == "glass":
             self.blobs = [_blob(c) for c in GLASS_PALETTES[index % len(GLASS_PALETTES)]]
@@ -425,8 +435,8 @@ class Background:
             cw, ch = int(self.photo.width / (1.12 * z)), int(self.photo.height / (1.12 * z))
             ox = int((self.photo.width - cw) / 2 + math.sin(g * 0.3) * 20)
             oy = int((self.photo.height - ch) / 2)
-            frame = self.photo.crop((ox, oy, ox + cw, oy + ch)).resize((W, H), Image.BILINEAR).convert("RGBA")
-            frame.alpha_composite(self.shade)
+            frame = self.photo.crop((ox, oy, ox + cw, oy + ch)).resize((W, H), Image.BILINEAR)
+            frame.paste(self.shade, (0, 0), self.shade)
             return frame
         frame = self.base.copy()
         name, acc = self.theme.name, self.theme.accent
@@ -506,7 +516,7 @@ class HeadingBlock(Block):
             if len(lines) <= max_lines or size < 40:
                 break
             size = int(size * 0.88)
-        self.line_h = int(size * (1.0 if theme.heading_font == "condensed" else 1.2))
+        self.line_h = int(size * (1.08 if theme.heading_font == "condensed" else 1.2))
         space = fnt.getlength(" ")
         self.items = []  # (sprite, x, y, accent, line_idx, word_idx, width)
         k = 0
