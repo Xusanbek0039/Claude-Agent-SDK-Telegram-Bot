@@ -227,7 +227,17 @@ class _BackgroundRenderer:
 
 # ---------- Elementlar ----------
 
-def _draw_text_block(canvas, lines, font, center_y, alpha, offset_y, fill) -> None:
+def _text_colors(scene: Scene) -> tuple[tuple, tuple]:
+    """Light background -> dark text, otherwise white text. Returns (fill, stroke)."""
+    if scene.bg_style != "image":
+        c1, c2 = _hex(scene.bg_colors[0]), _hex(scene.bg_colors[1])
+        lum = (0.2126 * (c1[0] + c2[0]) + 0.7152 * (c1[1] + c2[1]) + 0.0722 * (c1[2] + c2[2])) / 510
+        if lum > 0.62:
+            return (17, 24, 39), (255, 255, 255, 120)
+    return (255, 255, 255), (0, 0, 0, 110)
+
+
+def _draw_text_block(canvas, lines, font, center_y, alpha, offset_y, fill, stroke=(0, 0, 0, 110)) -> None:
     if alpha <= 0:
         return
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -246,7 +256,7 @@ def _draw_text_block(canvas, lines, font, center_y, alpha, offset_y, fill) -> No
                 x += font.size * 1.15
             else:
                 draw.text((x, y), chunk, font=font, fill=(*fill, 255),
-                          stroke_width=3, stroke_fill=(0, 0, 0, 110))
+                          stroke_width=3, stroke_fill=stroke)
                 x += font.getlength(chunk)
         y += line_h
     canvas.alpha_composite(_with_alpha(layer, alpha))
@@ -281,11 +291,10 @@ def _draw_stickers(canvas, stickers: list[Image.Image], t, fade, g) -> None:
         )
 
 
-def render_motion_video(scenes: list[Scene], audio_wav: bytes | None = None, text_color: str = "#ffffff") -> Path:
+def render_motion_video(scenes: list[Scene], audio_wav: bytes | None = None) -> Path:
     """Render scenes into an MP4 (optionally with a narration WAV track) and return its path."""
     out = config.MEDIA_DIR / f"{uuid.uuid4().hex[:12]}.mp4"
     title_font, sub_font = _font(92), _font(52)
-    txt = _hex(text_color)
     total_frames = sum(int(s.duration * FPS) for s in scenes)
 
     audio_path = None
@@ -319,6 +328,7 @@ def render_motion_video(scenes: list[Scene], audio_wav: bytes | None = None, tex
             hero = character or (_asset(scene.emoji) if scene.emoji else None)
             stickers = [img for img in (_asset(s) for s in scene.stickers[:4]) if img is not None]
             title_y = H // 2 - 20 if character else H // 2 - 60
+            txt, stroke = _text_colors(scene)
             for i in range(n):
                 t = i / FPS
                 g = frame_no / FPS
@@ -335,7 +345,7 @@ def render_motion_video(scenes: list[Scene], audio_wav: bytes | None = None, tex
 
                 # Sarlavha: pastdan ko'tarilib chiqadi
                 p = _ease_out((t - 0.15) / 0.6)
-                _draw_text_block(frame, title_lines, title_font, title_y, p * fade_out, (1 - p) * 120, txt)
+                _draw_text_block(frame, title_lines, title_font, title_y, p * fade_out, (1 - p) * 120, txt, stroke)
                 # Urg'u chizig'i
                 bw = int(320 * _ease_out((t - 0.45) / 0.5))
                 bar_y = title_y + (len(title_lines) * int(title_font.size * 1.25)) // 2 + 30
@@ -349,7 +359,7 @@ def render_motion_video(scenes: list[Scene], audio_wav: bytes | None = None, tex
                 if sub_lines:
                     q = _ease_out((t - 0.55) / 0.6)
                     sub_y = bar_y + 60 + (len(sub_lines) * int(sub_font.size * 1.25)) // 2
-                    _draw_text_block(frame, sub_lines, sub_font, sub_y, q * fade_out, (1 - q) * 80, txt)
+                    _draw_text_block(frame, sub_lines, sub_font, sub_y, q * fade_out, (1 - q) * 80, txt, stroke)
                 # Progress bar
                 prog = Image.new("RGBA", (W, H), (0, 0, 0, 0))
                 ImageDraw.Draw(prog).rectangle(
