@@ -1,16 +1,24 @@
-"""Motion video generator: Pillow frames -> ffmpeg -> 1080x1920 MP4 (Reels format)."""
+"""Motion video generator: Pillow frames -> ffmpeg -> 1080x1920 MP4 (Reels format).
+
+Uslublar (namunalar asosida):
+- terminal: qora fon, yashil mono shrift, kartochkalar, kod oynalari, pastda so'zma-so'z subtitr
+- glass:    och fon, rangli xira dog'lar, oq kartochkalar, tepada subtitr, o'ng pastda qahramon
+- slides:   qora setkali fon, katta qalin harflar, raqamli ro'yxat, 01/10 hisoblagich
+- kinetic:  qora fon, katta mono matn kursor bilan yoziladi, iliq yorug'lik
+- classic:  rangli gradient / to'lqin / setka / bokeh fonlar
+"""
 
 import logging
 import math
 import re
 import subprocess
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 
 import httpx
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from . import config
 
@@ -18,17 +26,57 @@ log = logging.getLogger(__name__)
 
 W, H = 1080, 1920
 FPS = 30
+MARGIN = 80
 
+THEME_NAMES = ("terminal", "glass", "slides", "kinetic", "classic")
 BG_STYLES = ("gradient", "diagonal", "radial", "waves", "grid", "bokeh", "image")
+ELEMENT_TYPES = ("cards", "list", "code", "number", "chips")
 
-FONT_CANDIDATES = [
+# ---------- Shriftlar ----------
+
+FONT_DIR = Path(__file__).parent / "fonts"
+FONT_FILES = {
+    "mono": "JetBrainsMono-Medium.ttf",
+    "mono_bold": "JetBrainsMono-Bold.ttf",
+    "condensed": "Anton-Regular.ttf",
+}
+INTER_WEIGHTS = {"sans": 500, "sans_bold": 700, "sans_black": 850}
+FALLBACK_FONTS = [
     config.FONT_PATH,
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "C:/Windows/Fonts/arialbd.ttf",
-    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
 ]
 
-# Emoji ketma-ketligi: bayroqlar, ZWJ birikmalari, teri rangi, FE0F
+
+@lru_cache(maxsize=128)
+def font(kind: str, size: int) -> ImageFont.FreeTypeFont:
+    try:
+        if kind in INTER_WEIGHTS:
+            f = ImageFont.truetype(str(FONT_DIR / "Inter-Variable.ttf"), size)
+            f.set_variation_by_axes([32 if size >= 32 else 14, INTER_WEIGHTS[kind]])
+            return f
+        return ImageFont.truetype(str(FONT_DIR / FONT_FILES[kind]), size)
+    except (OSError, KeyError):
+        for path in FALLBACK_FONTS:
+            if path and Path(path).exists():
+                return ImageFont.truetype(path, size)
+        return ImageFont.load_default(size)
+
+
+def _hex(color, default=(124, 58, 237)) -> tuple[int, int, int]:
+    if isinstance(color, tuple):
+        return color[:3]
+    color = (color or "").strip().lstrip("#")
+    if len(color) != 6:
+        return default
+    try:
+        return tuple(int(color[i : i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return default
+
+
+# ---------- Emoji ----------
+
 _EMOJI_CHAR = r"[\u2300-\u23FF\u2600-\u27BF\u2B00-\u2BFF\U0001F000-\U0001FAFF]"
 _EMOJI_TAIL = r"(?:\uFE0F)?(?:[\U0001F3FB-\U0001F3FF])?"
 EMOJI_RE = re.compile(
@@ -36,22 +84,6 @@ EMOJI_RE = re.compile(
 )
 EMOJI_DIR = config.MEDIA_DIR / "_emoji"
 EMOJI_DIR.mkdir(parents=True, exist_ok=True)
-
-STICKER_SLOTS = [(180, 300), (W - 180, 470), (170, H - 470), (W - 170, H - 330)]
-
-
-def _font(size: int) -> ImageFont.FreeTypeFont:
-    for path in FONT_CANDIDATES:
-        if path and Path(path).exists():
-            return ImageFont.truetype(path, size)
-    return ImageFont.load_default(size)
-
-
-def _hex(color: str) -> tuple[int, int, int]:
-    color = color.strip().lstrip("#")
-    if len(color) != 6:
-        return (124, 58, 237)
-    return tuple(int(color[i : i + 2], 16) for i in (0, 2, 4))
 
 
 @lru_cache(maxsize=256)
@@ -81,8 +113,10 @@ def _file_image(path: str) -> Image.Image:
     return img.crop(bbox) if bbox else img
 
 
-def _asset(ref: "str | Path") -> Image.Image | None:
+def _asset(ref: "str | Path | None") -> Image.Image | None:
     """Emoji string or image file path -> RGBA image."""
+    if not ref:
+        return None
     if isinstance(ref, Path):
         return _file_image(str(ref)) if ref.exists() else None
     m = EMOJI_RE.search(ref)
@@ -102,199 +136,882 @@ def _runs(text: str) -> list[tuple[bool, str]]:
     return runs
 
 
-def _measure(text: str, font: ImageFont.FreeTypeFont) -> float:
-    return sum(font.size * 1.15 if emo else font.getlength(chunk) for emo, chunk in _runs(text))
+def _measure(text: str, fnt: ImageFont.FreeTypeFont) -> float:
+    return sum(fnt.size * 1.15 if emo else fnt.getlength(chunk) for emo, chunk in _runs(text))
 
 
-@dataclass
-class Scene:
-    title: str
-    subtitle: str = ""
-    duration: float = 3.0
-    emoji: str = ""
-    narration: str = ""
-    bg_style: str = "gradient"
-    bg_colors: tuple[str, str] = ("#1e1b4b", "#7c3aed")
-    accent: str = "#facc15"
-    bg_image: Path | None = None
-    character: Path | None = None
-    stickers: list[str | Path] = field(default_factory=list)
+# ---------- Matn belgilash: *so'z* = urg'u rangi ----------
+
+def parse_markup(text: str) -> list[tuple[str, bool]]:
+    words = []
+    for i, part in enumerate(text.split("*")):
+        words.extend((w, i % 2 == 1) for w in part.split())
+    return words
 
 
-def _wrap(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
-    lines: list[str] = []
-    for paragraph in text.split("\n"):
-        line = ""
-        for word in paragraph.split():
-            candidate = f"{line} {word}".strip()
-            if _measure(candidate, font) <= max_width:
-                line = candidate
-            else:
-                if line:
-                    lines.append(line)
-                line = word
-        lines.append(line)
-    return lines
+def strip_markup(text: str) -> str:
+    return text.replace("*", "")
+
+
+def narration_words(narration: str, offset: float, clip_seconds: float) -> list[tuple[str, float, float, bool]]:
+    """Estimate per-word timings across the clip (proportional to word length)."""
+    words = parse_markup(narration)
+    if not words:
+        return []
+    weights = [len(w) + 2 for w, _ in words]
+    total, speak = sum(weights), max(clip_seconds - 0.15, 0.3)
+    out, cursor = [], offset
+    for (w, acc), wt in zip(words, weights):
+        dur = speak * wt / total
+        out.append((w, cursor, cursor + dur, acc))
+        cursor += dur
+    return out
+
+
+# ---------- Animatsiya yordamchilari ----------
+
+def _clamp(t: float) -> float:
+    return max(0.0, min(1.0, t))
 
 
 def _ease_out(t: float) -> float:
-    t = max(0.0, min(1.0, t))
-    return 1 - (1 - t) ** 3
+    return 1 - (1 - _clamp(t)) ** 3
 
 
 def _ease_out_back(t: float) -> float:
-    t = max(0.0, min(1.0, t))
-    c = 1.9
+    t = _clamp(t)
+    c = 1.7
     return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2
 
 
 def _with_alpha(img: Image.Image, alpha: float) -> Image.Image:
-    if alpha >= 1:
+    if alpha >= 0.999:
         return img
     r, g, b, a = img.split()
-    return Image.merge("RGBA", (r, g, b, a.point(lambda v: int(v * alpha))))
+    lut = [int(v * alpha) for v in range(256)]
+    return Image.merge("RGBA", (r, g, b, a.point(lut)))
+
+
+def _paste(frame: Image.Image, sprite: Image.Image, x: float, y: float, alpha: float = 1.0) -> None:
+    if alpha <= 0.01:
+        return
+    x, y = int(x), int(y)
+    if x >= W or y >= H or x + sprite.width <= 0 or y + sprite.height <= 0:
+        return
+    box = (max(0, -x), max(0, -y), min(sprite.width, W - x), min(sprite.height, H - y))
+    if box != (0, 0, sprite.width, sprite.height):
+        sprite = sprite.crop(box)
+    frame.alpha_composite(_with_alpha(sprite, alpha), (x + box[0], y + box[1]))
+
+
+def _rounded(size: tuple[int, int], radius: int, fill, outline=None, width: int = 2, shadow: bool = False) -> Image.Image:
+    """Rounded card sprite, optionally with a soft drop shadow (sprite gets padding)."""
+    pad = 40 if shadow else 0
+    img = Image.new("RGBA", (size[0] + pad * 2, size[1] + pad * 2), (0, 0, 0, 0))
+    if shadow:
+        sh = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ImageDraw.Draw(sh).rounded_rectangle(
+            (pad, pad + 14, pad + size[0], pad + size[1] + 14), radius, fill=(30, 40, 80, 38))
+        img = sh.filter(ImageFilter.GaussianBlur(18))
+    ImageDraw.Draw(img).rounded_rectangle(
+        (pad, pad, pad + size[0] - 1, pad + size[1] - 1), radius, fill=fill, outline=outline, width=width)
+    return img
+
+
+def _text_sprite(text: str, fnt: ImageFont.FreeTypeFont, color, emoji_scale: float = 1.0) -> Image.Image:
+    asc, desc = fnt.getmetrics()
+    img = Image.new("RGBA", (int(_measure(text, fnt)) + 10, asc + desc + 10), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    x = 0.0
+    for is_emoji, chunk in _runs(text):
+        if is_emoji:
+            icon = _emoji_image(chunk)
+            if icon is not None:
+                px = int(fnt.size * emoji_scale)
+                img.alpha_composite(icon.resize((px, px), Image.LANCZOS), (int(x), max(0, int(asc - px * 0.9))))
+            x += fnt.size * 1.15
+        else:
+            d.text((x, 0), chunk, font=fnt, fill=color)
+            x += fnt.getlength(chunk)
+    return img
+
+
+def _wrap_words(words: list, fnt, max_width: int, max_words: int = 99) -> list[list]:
+    """words: list of (text, ...) tuples -> lines (lists of the same tuples)."""
+    lines, line, width = [], [], 0.0
+    space = fnt.getlength(" ")
+    for item in words:
+        w = _measure(item[0], fnt)
+        if line and (width + space + w > max_width or len(line) >= max_words):
+            lines.append(line)
+            line, width = [], 0.0
+        width += (space if line else 0) + w
+        line.append(item)
+    if line:
+        lines.append(line)
+    return lines
+
+
+# ---------- Uslublar ----------
+
+@dataclass(frozen=True)
+class Theme:
+    name: str
+    bg: tuple
+    fg: tuple
+    dim: tuple
+    accent: tuple
+    heading_font: str
+    heading_size: int
+    body_font: str
+    body_bold: str
+    align: str          # center | left
+    upper: bool
+    card_bg: tuple      # RGBA
+    card_border: tuple  # RGBA
+    radius: int
+    captions: str       # bottom | top | kinetic | none
+    shadow: bool = False
+    glow: tuple = (255, 110, 40)
+
+
+THEMES = {
+    "terminal": Theme("terminal", (9, 12, 9), (232, 240, 226), (115, 130, 112), (198, 244, 50),
+                      "mono_bold", 74, "mono", "mono_bold", "center", False,
+                      (13, 19, 13, 245), (198, 244, 50, 150), 10, "bottom"),
+    "glass": Theme("glass", (244, 246, 251), (17, 17, 20), (105, 110, 122), (37, 99, 235),
+                   "sans_black", 82, "sans", "sans_bold", "center", False,
+                   (255, 255, 255, 240), (0, 0, 0, 16), 34, "top", shadow=True),
+    "slides": Theme("slides", (22, 24, 29), (245, 245, 245), (150, 150, 158), (255, 122, 69),
+                    "condensed", 150, "sans", "sans_bold", "left", True,
+                    (35, 37, 44, 255), (255, 255, 255, 16), 14, "none"),
+    "kinetic": Theme("kinetic", (5, 5, 5), (240, 240, 240), (95, 95, 95), (255, 200, 61),
+                     "mono_bold", 96, "mono", "mono_bold", "center", False,
+                     (22, 22, 22, 235), (255, 255, 255, 30), 16, "kinetic"),
+    "classic": Theme("classic", (30, 27, 75), (255, 255, 255), (220, 220, 235), (250, 204, 21),
+                     "sans_black", 92, "sans", "sans_bold", "center", False,
+                     (255, 255, 255, 38), (255, 255, 255, 60), 28, "bottom"),
+}
+
+GLASS_PALETTES = [
+    ((147, 197, 253), (196, 181, 253), (167, 243, 208)),
+    ((253, 186, 116), (252, 165, 165), (253, 224, 71)),
+    ((134, 239, 172), (103, 232, 249), (190, 242, 100)),
+    ((216, 180, 254), (249, 168, 212), (165, 180, 252)),
+]
+
+
+@dataclass
+class Scene:
+    heading: str = ""
+    subheading: str = ""
+    narration: str = ""
+    duration: float = 3.0
+    emoji: str = ""
+    character: Path | None = None
+    stickers: list = field(default_factory=list)
+    elements: list = field(default_factory=list)
+    variant: str = ""            # slides: light | kinetic: glow rangi | glass: palitra raqami
+    accent: str = ""
+    bg_style: str = "gradient"   # classic uchun
+    bg_colors: tuple = ("#1e1b4b", "#7c3aed")
+    bg_image: Path | None = None
+    words: list = field(default_factory=list)  # narration_words() natijasi
+
+
+@dataclass
+class VideoSpec:
+    theme: str = "terminal"
+    handle: str = ""
+    label: str = ""
+    captions: bool = True
+
+
+def _scene_theme(base: Theme, scene: Scene) -> Theme:
+    t = base
+    if scene.accent:
+        t = replace(t, accent=_hex(scene.accent, t.accent))
+    if base.name == "slides" and scene.variant == "light":
+        t = replace(t, bg=(243, 239, 230), fg=(20, 20, 22), dim=(105, 100, 95),
+                    card_bg=(255, 255, 255, 255), card_border=(0, 0, 0, 22))
+    if base.name == "kinetic" and scene.variant.startswith("#"):
+        t = replace(t, glow=_hex(scene.variant, t.glow))
+    if base.name == "classic":
+        c1, c2 = _hex(scene.bg_colors[0]), _hex(scene.bg_colors[1])
+        lum = (0.2126 * (c1[0] + c2[0]) + 0.7152 * (c1[1] + c2[1]) + 0.0722 * (c1[2] + c2[2])) / 510
+        if lum > 0.62 and scene.bg_style != "image":
+            t = replace(t, fg=(17, 24, 39), dim=(70, 70, 80), card_bg=(255, 255, 255, 170),
+                        card_border=(0, 0, 0, 25))
+        if not scene.accent:
+            t = replace(t, accent=(250, 204, 21))
+    return t
 
 
 # ---------- Fonlar ----------
+
+def _grid(img: Image.Image, step: int, color: tuple) -> None:
+    d = ImageDraw.Draw(img, "RGBA")
+    for x in range(0, W, step):
+        d.line((x, 0, x, H), fill=color)
+    for y in range(0, H, step):
+        d.line((0, y, W, y), fill=color)
+
+
+def _vignette(img: Image.Image, strength: int) -> None:
+    mask = Image.radial_gradient("L").resize((int(W * 1.5), int(H * 1.3)))
+    mask = mask.crop(((mask.width - W) // 2, (mask.height - H) // 2,
+                      (mask.width - W) // 2 + W, (mask.height - H) // 2 + H))
+    shade = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    shade.putalpha(mask.point(lambda v: int(v / 255 * strength)))
+    img.alpha_composite(shade)
+
+
+@lru_cache(maxsize=16)
+def _blob(color: tuple, size: int = 760) -> Image.Image:
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    r = size // 2 - 150
+    ImageDraw.Draw(img).ellipse((size / 2 - r, size / 2 - r, size / 2 + r, size / 2 + r), fill=(*color, 150))
+    return img.filter(ImageFilter.GaussianBlur(110))
+
 
 def _two_color(mask: Image.Image, c1: tuple, c2: tuple) -> Image.Image:
     return Image.composite(Image.new("RGB", (W, H), c2), Image.new("RGB", (W, H), c1), mask).convert("RGBA")
 
 
-def _static_background(scene: Scene) -> Image.Image:
-    c1, c2 = _hex(scene.bg_colors[0]), _hex(scene.bg_colors[1])
-    if scene.bg_style == "radial":
-        big = Image.radial_gradient("L").resize((int(H * 1.5), int(H * 1.5)))
-        left, top = (big.width - W) // 2, (big.height - H) // 2
-        return _two_color(big.crop((left, top, left + W, top + H)), c1, c2)
-    if scene.bg_style == "diagonal":
-        big = Image.linear_gradient("L").rotate(35, expand=True, fillcolor=128).resize((int(H * 1.6), int(H * 1.6)))
-        left, top = (big.width - W) // 2, (big.height - H) // 2
-        return _two_color(big.crop((left, top, left + W, top + H)), c1, c2)
-    return _two_color(Image.linear_gradient("L").resize((W, H)), c1, c2)
-
-
-class _BackgroundRenderer:
-    def __init__(self, scene: Scene):
-        self.scene = scene
-        self.acc = _hex(scene.accent)
+class Background:
+    def __init__(self, theme: Theme, scene: Scene, index: int):
+        self.theme, self.scene, self.index = theme, scene, index
         self.photo = None
-        if scene.bg_style == "image" and scene.bg_image and scene.bg_image.exists():
+        if scene.bg_image and scene.bg_image.exists():
             img = Image.open(scene.bg_image).convert("RGB")
             scale = max(W * 1.12 / img.width, H * 1.12 / img.height)
             self.photo = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
-            # Matn o'qilishi uchun yumshoq qorong'i qatlam
-            shade = Image.linear_gradient("L").resize((W, H)).point(lambda v: int(60 + 0.35 * abs(v - 128)))
-            self.shade = Image.merge("RGBA", (*[Image.new("L", (W, H), 0)] * 3, shade))
-        self.base = _static_background(scene)
+            shade = Image.linear_gradient("L").resize((W, H)).point(lambda v: int(70 + 0.4 * abs(v - 128)))
+            self.shade = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            self.shade.putalpha(shade)
+            return
+        name = theme.name
+        if name == "classic":
+            c1, c2 = _hex(scene.bg_colors[0]), _hex(scene.bg_colors[1])
+            if scene.bg_style == "radial":
+                big = Image.radial_gradient("L").resize((int(H * 1.5), int(H * 1.5)))
+                left, top = (big.width - W) // 2, (big.height - H) // 2
+                self.base = _two_color(big.crop((left, top, left + W, top + H)), c1, c2)
+            elif scene.bg_style == "diagonal":
+                big = Image.linear_gradient("L").rotate(35, expand=True, fillcolor=128).resize((int(H * 1.6),) * 2)
+                left, top = (big.width - W) // 2, (big.height - H) // 2
+                self.base = _two_color(big.crop((left, top, left + W, top + H)), c1, c2)
+            else:
+                self.base = _two_color(Image.linear_gradient("L").resize((W, H)), c1, c2)
+            return
+        self.base = Image.new("RGBA", (W, H), (*theme.bg, 255))
+        if name == "terminal":
+            _grid(self.base, 54, (*theme.accent, 9))
+            _vignette(self.base, 150)
+        elif name == "slides":
+            _grid(self.base, 90, (*theme.fg, 10))
+        elif name == "kinetic":
+            glow = Image.radial_gradient("L").resize((1500, 1500)).point(lambda v: max(0, 120 - v // 2))
+            layer = Image.new("RGBA", (1500, 1500), (*theme.glow, 0))
+            layer.putalpha(glow)
+            self.base.alpha_composite(layer, (W - 900, H - 1000))
+            _vignette(self.base, 120)
+        elif name == "glass":
+            self.blobs = [_blob(c) for c in GLASS_PALETTES[index % len(GLASS_PALETTES)]]
 
     def frame(self, t: float, g: float) -> Image.Image:
-        style = self.scene.bg_style
         if self.photo is not None:
-            # Ken Burns: sekin zoom va siljish
             z = 1 + 0.08 * (t / max(self.scene.duration, 0.1))
-            cw, ch = int(self.photo.width / (1.12 * z) * 1.0), int(self.photo.height / (1.12 * z))
+            cw, ch = int(self.photo.width / (1.12 * z)), int(self.photo.height / (1.12 * z))
             ox = int((self.photo.width - cw) / 2 + math.sin(g * 0.3) * 20)
             oy = int((self.photo.height - ch) / 2)
             frame = self.photo.crop((ox, oy, ox + cw, oy + ch)).resize((W, H), Image.BILINEAR).convert("RGBA")
             frame.alpha_composite(self.shade)
             return frame
-
         frame = self.base.copy()
-        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        d = ImageDraw.Draw(layer)
-        if style == "waves":
-            for k in range(3):
-                amp, base_y, speed = 70 + k * 25, H * (0.62 + k * 0.12), 0.8 + k * 0.35
-                pts = [(x, base_y + math.sin(x / 170 + g * speed + k) * amp) for x in range(0, W + 40, 40)]
-                d.polygon(pts + [(W, H), (0, H)], fill=(*self.acc, 45 + k * 15))
-        elif style == "grid":
-            step, off = 90, (g * 25) % 90
-            for gx in range(-1, W // step + 2):
-                for gy in range(-1, H // step + 2):
-                    x, y = gx * step + off, gy * step + off
-                    r = 5 + 3 * math.sin(g * 2 + gx * 0.7 + gy * 0.4)
-                    d.ellipse((x - r, y - r, x + r, y + r), fill=(*self.acc, 70))
-        elif style in ("bokeh", "gradient", "diagonal", "radial"):
-            circles = [(380, 40), (260, 55), (180, 35)] if style == "bokeh" else [(300, 28), (200, 22)]
-            for k, (r, a) in enumerate(circles):
-                cx = W / 2 + math.sin(g * 0.6 + k * 2.1) * 360
-                cy = H / 2 + math.cos(g * 0.45 + k * 1.7) * 640
-                d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(*self.acc, a))
-        frame.alpha_composite(layer)
+        name, acc = self.theme.name, self.theme.accent
+        if name == "glass":
+            for k, blob in enumerate(self.blobs):
+                cx = W * (0.25 + 0.5 * k / 2) + math.sin(g * 0.35 + k * 2.1) * 220
+                cy = H * (0.25 + 0.3 * k) + math.cos(g * 0.3 + k * 1.3) * 260
+                _paste(frame, blob, cx - blob.width / 2, cy - blob.height / 2)
+        elif name == "classic":
+            d = ImageDraw.Draw(frame, "RGBA")
+            style = self.scene.bg_style
+            if style == "waves":
+                for k in range(3):
+                    amp, base_y, speed = 70 + k * 25, H * (0.62 + k * 0.12), 0.8 + k * 0.35
+                    pts = [(x, base_y + math.sin(x / 170 + g * speed + k) * amp) for x in range(0, W + 40, 40)]
+                    d.polygon(pts + [(W, H), (0, H)], fill=(*acc, 45 + k * 15))
+            elif style == "grid":
+                step, off = 90, (g * 25) % 90
+                for gx in range(-1, W // step + 2):
+                    for gy in range(-1, H // step + 2):
+                        x, y = gx * step + off, gy * step + off
+                        r = 5 + 3 * math.sin(g * 2 + gx * 0.7 + gy * 0.4)
+                        d.ellipse((x - r, y - r, x + r, y + r), fill=(*acc, 70))
+            else:
+                circles = [(380, 40), (260, 55), (180, 35)] if style == "bokeh" else [(300, 28), (200, 22)]
+                for k, (r, a) in enumerate(circles):
+                    cx = W / 2 + math.sin(g * 0.6 + k * 2.1) * 360
+                    cy = H / 2 + math.cos(g * 0.45 + k * 1.7) * 640
+                    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(*acc, a))
         return frame
 
 
-# ---------- Elementlar ----------
+# ---------- Bloklar ----------
 
-def _text_colors(scene: Scene) -> tuple[tuple, tuple]:
-    """Light background -> dark text, otherwise white text. Returns (fill, stroke)."""
-    if scene.bg_style != "image":
-        c1, c2 = _hex(scene.bg_colors[0]), _hex(scene.bg_colors[1])
-        lum = (0.2126 * (c1[0] + c2[0]) + 0.7152 * (c1[1] + c2[1]) + 0.0722 * (c1[2] + c2[2])) / 510
-        if lum > 0.62:
-            return (17, 24, 39), (255, 255, 255, 120)
-    return (255, 255, 255), (0, 0, 0, 110)
+class Block:
+    height = 0
+
+    def draw(self, frame: Image.Image, top: float, t: float, fade: float) -> None:
+        raise NotImplementedError
 
 
-def _draw_text_block(canvas, lines, font, center_y, alpha, offset_y, fill, stroke=(0, 0, 0, 110)) -> None:
-    if alpha <= 0:
-        return
-    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(layer)
-    line_h = int(font.size * 1.25)
-    emoji_px = int(font.size * 1.05)
-    y = center_y - (line_h * len(lines)) // 2 + int(offset_y)
-    for line in lines:
-        x = (W - _measure(line, font)) / 2
-        for is_emoji, chunk in _runs(line):
-            if is_emoji:
-                img = _emoji_image(chunk)
-                if img is not None:
-                    icon = img.resize((emoji_px, emoji_px), Image.LANCZOS)
-                    layer.alpha_composite(icon, (int(x), int(y - font.size * 0.05)))
-                x += font.size * 1.15
+class HeroBlock(Block):
+    def __init__(self, img: Image.Image, max_px: int, t0: float, slide: bool):
+        ratio = max_px / max(img.width, img.height)
+        self.sprite = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
+        self.height = self.sprite.height
+        self.t0, self.slide = t0, slide
+
+    def draw(self, frame, top, t, fade):
+        t = t - self.t0
+        s = _ease_out_back(t / 0.6)
+        if s <= 0.02:
+            return
+        g = t
+        sprite = self.sprite
+        if s < 0.999 or not self.slide:
+            w, h = max(4, int(sprite.width * s)), max(4, int(sprite.height * s))
+            sprite = sprite.resize((w, h), Image.BILINEAR)
+            if not self.slide:
+                sprite = sprite.rotate(math.sin(g * 2.2) * 5, resample=Image.BICUBIC, expand=True)
+        y = top + (self.height - sprite.height) / 2 + math.sin(g * 2.4) * 12
+        _paste(frame, sprite, (W - sprite.width) / 2, y, fade)
+
+
+class HeadingBlock(Block):
+    def __init__(self, text: str, theme: Theme, t0: float):
+        self.theme, self.t0 = theme, t0
+        if theme.upper:
+            text = text.upper()
+        words = parse_markup(text)
+        size = theme.heading_size
+        max_w = W - 2 * MARGIN
+        max_lines = 4 if theme.name == "slides" else 3
+        while True:
+            fnt = font(theme.heading_font, size)
+            lines = _wrap_words(words, fnt, max_w)
+            if len(lines) <= max_lines or size < 40:
+                break
+            size = int(size * 0.88)
+        self.line_h = int(size * (1.0 if theme.heading_font == "condensed" else 1.2))
+        space = fnt.getlength(" ")
+        self.items = []  # (sprite, x, y, accent, line_idx, word_idx, width)
+        k = 0
+        for li, line in enumerate(lines):
+            widths = [_measure(w, fnt) for w, _ in line]
+            total = sum(widths) + space * (len(line) - 1)
+            x = MARGIN if theme.align == "left" else (W - total) / 2
+            for (word, acc), wd in zip(line, widths):
+                color = theme.accent if acc else theme.fg
+                self.items.append((_text_sprite(word, fnt, (*color, 255)), x, li * self.line_h, acc, li, k, wd))
+                x += wd + space
+                k += 1
+        self.height = len(lines) * self.line_h
+        self.n_words = k
+
+    def draw(self, frame, top, t, fade):
+        name = self.theme.name
+        t = t - self.t0
+        d = ImageDraw.Draw(frame, "RGBA")
+        last_visible = None
+        for sprite, x, y, acc, li, k, wd in self.items:
+            if name == "slides":
+                p = _ease_out((t - li * 0.12) / 0.45)
+                _paste(frame, sprite, x - (1 - p) * 90, top + y, p * fade)
+            elif name == "kinetic":
+                if t >= k * 0.12:
+                    _paste(frame, sprite, x, top + y, fade)
+                    last_visible = (x + wd, top + y)
             else:
-                draw.text((x, y), chunk, font=font, fill=(*fill, 255),
-                          stroke_width=3, stroke_fill=stroke)
-                x += font.getlength(chunk)
-        y += line_h
-    canvas.alpha_composite(_with_alpha(layer, alpha))
+                p = _ease_out((t - k * 0.07) / 0.35)
+                _paste(frame, sprite, x, top + y + (1 - p) * 34, p * fade)
+                if acc and name in ("glass", "classic", "terminal"):
+                    u = _ease_out((t - k * 0.07 - 0.3) / 0.35)
+                    if u > 0:
+                        uy = top + y + self.line_h * 0.9
+                        d.rounded_rectangle((x, uy, x + wd * u, uy + 8), 4,
+                                            fill=(*self.theme.accent, int(255 * fade)))
+        if last_visible and int(t * 2.5) % 2 == 0:
+            cx, cy = last_visible
+            d.rectangle((cx + 10, cy + 8, cx + 10 + self.line_h * 0.32, cy + self.line_h * 0.92),
+                        fill=(255, 45, 45, int(255 * fade)))
 
 
-def _draw_hero(canvas, img: Image.Image, max_px: int, cy: float, t, fade, g, slide: bool) -> None:
-    if fade <= 0:
-        return
-    scale = _ease_out_back(t / 0.7)
-    ratio = max_px / max(img.width, img.height)
-    w, h = int(img.width * ratio * max(scale, 0.01)), int(img.height * ratio * max(scale, 0.01))
-    if w < 4 or h < 4:
-        return
-    icon = img.resize((w, h), Image.LANCZOS)
-    if not slide:
-        icon = icon.rotate(math.sin(g * 2.2) * 6, resample=Image.BICUBIC, expand=True)
-    y = cy + math.sin(g * 2.6) * 18 + (1 - _ease_out(t / 0.6)) * (300 if slide else 0)
-    canvas.alpha_composite(_with_alpha(icon, fade), (int((W - icon.width) / 2), int(y - icon.height / 2)))
+class TextBlock(Block):
+    def __init__(self, text: str, theme: Theme, t0: float, size: int = 44):
+        self.theme, self.t0 = theme, t0
+        fnt = font(theme.body_font, size)
+        lines = _wrap_words([(w,) for w in text.split()], fnt, W - 2 * MARGIN - 40)
+        self.sprites = [_text_sprite(" ".join(w for (w,) in line), fnt, (*theme.dim, 255)) for line in lines]
+        self.line_h = int(size * 1.35)
+        self.height = len(self.sprites) * self.line_h
+
+    def draw(self, frame, top, t, fade):
+        p = _ease_out((t - self.t0) / 0.5)
+        for i, sp in enumerate(self.sprites):
+            x = MARGIN if self.theme.align == "left" else (W - sp.width) / 2
+            _paste(frame, sp, x, top + i * self.line_h + (1 - p) * 24, p * fade)
 
 
-def _draw_stickers(canvas, stickers: list[Image.Image], t, fade, g) -> None:
-    for k, (img, (sx, sy)) in enumerate(zip(stickers, STICKER_SLOTS)):
-        p = _ease_out_back((t - 0.5 - k * 0.2) / 0.5)
-        if p <= 0.02:
-            continue
-        size = int(170 * p)
-        icon = img.resize((size, int(size * img.height / img.width)), Image.LANCZOS)
-        icon = icon.rotate(math.sin(g * 1.8 + k) * 12, resample=Image.BICUBIC, expand=True)
-        y = sy + math.sin(g * 2 + k * 1.3) * 22
-        canvas.alpha_composite(
-            _with_alpha(icon, fade * 0.95), (int(sx - icon.width / 2), int(y - icon.height / 2))
-        )
+class CardsBlock(Block):
+    def __init__(self, items: list[dict], theme: Theme, t0: float):
+        self.theme, self.t0 = theme, t0
+        items = items[:4]
+        cols = 1 if len(items) <= 2 else 2
+        gap = 28
+        cw = (W - 2 * MARGIN - gap * (cols - 1)) // cols
+        title_f = font(theme.body_bold, 44 if cols == 1 else 38)
+        text_f = font(theme.body_font, 32 if cols == 1 else 28)
+        pad, icon_px = 34, (72 if cols == 1 else 64)
+        cards = []
+        for it in items:
+            icon = _asset(it.get("icon", ""))
+            text_x = pad + (icon_px + 26 if icon is not None and cols == 1 else 0)
+            inner = cw - text_x - pad
+            t_lines = _wrap_words([(w,) for w in str(it.get("title", "")).split()], title_f, inner)
+            d_lines = _wrap_words([(w,) for w in str(it.get("text", "")).split()], text_f, inner)
+            h = pad * 2 + len(t_lines) * int(title_f.size * 1.25) + len(d_lines) * int(text_f.size * 1.4)
+            if d_lines:
+                h += 8
+            if icon is not None and cols == 2:
+                h += icon_px + 18
+            h = max(h, icon_px + pad * 2 if icon is not None else 0)
+            cards.append((it, icon, text_x, t_lines, d_lines, h))
+        rows = [cards[i : i + cols] for i in range(0, len(cards), cols)]
+        self.sprites = []  # (sprite, x, y)
+        y = 0
+        for row in rows:
+            rh = max(c[5] for c in row)
+            for ci, (it, icon, text_x, t_lines, d_lines, _) in enumerate(row):
+                border = theme.card_border
+                sprite = _rounded((cw, rh), theme.radius, theme.card_bg, border, 2, theme.shadow)
+                off = 40 if theme.shadow else 0
+                dr = ImageDraw.Draw(sprite)
+                ty = off + pad
+                if icon is not None:
+                    ic = icon.resize((icon_px, int(icon_px * icon.height / icon.width)), Image.LANCZOS)
+                    if cols == 1:
+                        sprite.alpha_composite(ic, (off + pad, off + (rh - ic.height) // 2))
+                    else:
+                        sprite.alpha_composite(ic, (off + pad, ty))
+                        ty += icon_px + 18
+                for line in t_lines:
+                    dr.text((off + text_x, ty), " ".join(w for (w,) in line), font=title_f, fill=(*theme.fg, 255))
+                    ty += int(title_f.size * 1.25)
+                ty += 8
+                for line in d_lines:
+                    dr.text((off + text_x, ty), " ".join(w for (w,) in line), font=text_f, fill=(*theme.dim, 255))
+                    ty += int(text_f.size * 1.4)
+                self.sprites.append((sprite, MARGIN + ci * (cw + gap) - off, y - off))
+            y += rh + gap
+        self.height = y - gap
+
+    def draw(self, frame, top, t, fade):
+        for k, (sp, x, y) in enumerate(self.sprites):
+            p = _ease_out((t - self.t0 - k * 0.18) / 0.45)
+            _paste(frame, sp, x, top + y + (1 - p) * 60, p * fade)
 
 
-def render_motion_video(scenes: list[Scene], audio_wav: bytes | None = None) -> Path:
+class ListBlock(Block):
+    def __init__(self, items: list[str], theme: Theme, t0: float):
+        self.theme, self.t0 = theme, t0
+        f = font(theme.body_bold, 40)
+        num_f = font("mono_bold", 34)
+        rh, gap, w = 104, 18, W - 2 * MARGIN
+        self.sprites = []
+        for i, text in enumerate(items[:6]):
+            sp = _rounded((w, rh), theme.radius, theme.card_bg, theme.card_border, 2)
+            d = ImageDraw.Draw(sp)
+            d.rounded_rectangle((22, 20, 22 + 64, 20 + 64), 10, fill=(*theme.accent, 255))
+            num = f"{i + 1:02d}"
+            d.text((22 + 32, 52), num, font=num_f, fill=(*theme.bg, 255), anchor="mm")
+            label = str(text)
+            while f.getlength(label) > w - 140 and len(label) > 4:
+                label = label[:-2]
+            d.text((110, rh / 2), label if label == str(text) else label + "…", font=f,
+                   fill=(*theme.fg, 255), anchor="lm")
+            self.sprites.append((sp, i * (rh + gap)))
+        self.height = len(self.sprites) * (rh + gap) - gap
+
+    def draw(self, frame, top, t, fade):
+        for k, (sp, y) in enumerate(self.sprites):
+            p = _ease_out((t - self.t0 - k * 0.2) / 0.4)
+            _paste(frame, sp, MARGIN - (1 - p) * 80, top + y, p * fade)
+
+
+class CodeBlock(Block):
+    def __init__(self, title: str, lines: list[str], theme: Theme, t0: float):
+        self.theme, self.t0 = theme, t0
+        self.f = font("mono", 33)
+        self.lines = [str(x) for x in lines[:10]]
+        self.lh, self.header = 50, 70
+        w = W - 2 * MARGIN
+        self.h = self.header + len(self.lines) * self.lh + 36
+        bg = (12, 14, 18, 245) if theme.name in ("glass", "classic") else theme.card_bg
+        border = theme.card_border if theme.name == "terminal" else (255, 255, 255, 30)
+        self.sprite = _rounded((w, self.h), 14, bg, border, 2)
+        d = ImageDraw.Draw(self.sprite)
+        for i, c in enumerate([(255, 95, 86), (255, 189, 46), (39, 201, 63)]):
+            d.ellipse((26 + i * 34, 26, 26 + i * 34 + 18, 44), fill=c)
+        d.text((140, 35), title, font=font("mono", 26), fill=(150, 160, 150, 255), anchor="lm")
+        self.height = self.h
+        self.total_chars = sum(len(x) for x in self.lines)
+
+    def _color(self, line: str) -> tuple:
+        s = line.strip()
+        if s.startswith("$") or s.startswith(">"):
+            return (198, 244, 50) if self.theme.name != "terminal" else self.theme.accent
+        if s.startswith("//") or s.startswith("#"):
+            return (120, 130, 125)
+        if s.startswith("!") or s.startswith("✗"):
+            return (255, 95, 86)
+        return (230, 235, 228)
+
+    def draw(self, frame, top, t, fade):
+        p = _ease_out((t - self.t0) / 0.4)
+        if p <= 0:
+            return
+        _paste(frame, self.sprite, MARGIN, top + (1 - p) * 40, p * fade)
+        chars = int(max(0.0, t - self.t0 - 0.3) * 45)
+        d = ImageDraw.Draw(frame, "RGBA")
+        y = top + self.header + (1 - p) * 40
+        cursor = None
+        for line in self.lines:
+            if chars <= 0:
+                break
+            shown = line[:chars]
+            chars -= len(line)
+            d.text((MARGIN + 30, y), shown, font=self.f, fill=(*self._color(line), int(255 * fade)))
+            cursor = (MARGIN + 30 + self.f.getlength(shown), y)
+            y += self.lh
+        if cursor and int(t * 2.5) % 2 == 0:
+            d.rectangle((cursor[0] + 4, cursor[1] + 4, cursor[0] + 22, cursor[1] + 40),
+                        fill=(*self.theme.accent, int(230 * fade)))
+
+
+class NumberBlock(Block):
+    def __init__(self, value: str, label: str, theme: Theme, t0: float, prefix: str = "", suffix: str = ""):
+        self.theme, self.t0 = theme, t0
+        self.raw, self.prefix, self.suffix = str(value), prefix, suffix
+        digits = re.sub(r"[^\d]", "", self.raw)
+        self.target = int(digits) if digits and re.fullmatch(r"[\d\s,.]+", self.raw.strip()) else None
+        self.sep = "," if "," in self.raw else (" " if " " in self.raw.strip() else "")
+        big = 240 if theme.heading_font == "condensed" else 190
+        self.f = font(theme.heading_font, big)
+        self.label = TextBlock(label, theme, t0 + 0.3, 42) if label else None
+        self.big_h = int(big * 1.15)
+        self.height = self.big_h + (self.label.height + 10 if self.label else 0)
+
+    def draw(self, frame, top, t, fade):
+        p = _ease_out((t - self.t0) / 1.3)
+        if t < self.t0:
+            return
+        if self.target is not None:
+            cur = int(self.target * p)
+            txt = f"{cur:,}".replace(",", self.sep) if self.sep else str(cur)
+        else:
+            txt = self.raw
+        txt = f"{self.prefix}{txt}{self.suffix}"
+        d = ImageDraw.Draw(frame, "RGBA")
+        a = int(255 * fade * _ease_out((t - self.t0) / 0.3))
+        x = MARGIN if self.theme.align == "left" else W / 2
+        d.text((x, top + self.big_h / 2), txt, font=self.f, fill=(*self.theme.accent, a),
+               anchor="lm" if self.theme.align == "left" else "mm")
+        if self.label:
+            self.label.draw(frame, top + self.big_h + 10, t, fade)
+
+
+class ChipsBlock(Block):
+    def __init__(self, items: list[str], theme: Theme, t0: float):
+        self.theme, self.t0 = theme, t0
+        f = font(theme.body_bold, 36)
+        sprites = []
+        for text in items[:8]:
+            tw = int(_measure(str(text), f))
+            sp = _rounded((tw + 56, 76), 38, (*theme.accent, 40), (*theme.accent, 200), 2)
+            ts = _text_sprite(str(text), f, (*theme.fg, 255))
+            sp.alpha_composite(ts, (28, (76 - ts.height) // 2 + 4))
+            sprites.append(sp)
+        rows, row, width = [], [], 0
+        for sp in sprites:
+            if row and width + 18 + sp.width > W - 2 * MARGIN:
+                rows.append(row)
+                row, width = [], 0
+            width += (18 if row else 0) + sp.width
+            row.append(sp)
+        if row:
+            rows.append(row)
+        self.items = []
+        for ri, r in enumerate(rows):
+            total = sum(s.width for s in r) + 18 * (len(r) - 1)
+            x = MARGIN if theme.align == "left" else (W - total) / 2
+            for sp in r:
+                self.items.append((sp, x, ri * 94))
+                x += sp.width + 18
+        self.height = len(rows) * 94 - 18
+
+    def draw(self, frame, top, t, fade):
+        for k, (sp, x, y) in enumerate(self.items):
+            s = _ease_out_back((t - self.t0 - k * 0.1) / 0.4)
+            if s <= 0.05:
+                continue
+            spr = sp if s > 0.99 else sp.resize((max(2, int(sp.width * s)), max(2, int(sp.height * s))))
+            _paste(frame, spr, x + (sp.width - spr.width) / 2, top + y + (sp.height - spr.height) / 2, fade)
+
+
+def _element_block(el: dict, theme: Theme, t0: float) -> Block | None:
+    kind = el.get("type")
+    try:
+        if kind == "cards" and el.get("items"):
+            return CardsBlock(el["items"], theme, t0)
+        if kind == "list" and el.get("items"):
+            return ListBlock(el["items"], theme, t0)
+        if kind == "code" and el.get("lines"):
+            return CodeBlock(el.get("title", "terminal"), el["lines"], theme, t0)
+        if kind == "number" and el.get("value") is not None:
+            return NumberBlock(el["value"], el.get("label", ""), theme, t0, el.get("prefix", ""), el.get("suffix", ""))
+        if kind == "chips" and el.get("items"):
+            return ChipsBlock(el["items"], theme, t0)
+    except Exception:
+        log.exception("Element chizilmadi: %s", el)
+    return None
+
+
+# ---------- Subtitr ----------
+
+class Captions:
+    def __init__(self, words: list, theme: Theme, mode: str):
+        self.theme, self.mode, self.words = theme, mode, words
+        if mode == "top":
+            self.f = font("sans_black", 60)
+        elif mode == "kinetic":
+            self.f = font("mono_bold", 92)
+        else:
+            self.f = font(theme.body_bold if theme.name != "terminal" else "mono_bold", 46)
+        max_w = 820 if mode == "kinetic" else W - 2 * MARGIN
+        indexed = [(w, i) for i, (w, *_rest) in enumerate(words)]
+        self.groups = _wrap_words(indexed, self.f, max_w, 3 if mode == "kinetic" else 6)
+        self.group_of = {i: gi for gi, grp in enumerate(self.groups) for _, i in grp}
+
+    def _current(self, t: float) -> int | None:
+        idx = None
+        for i, (_, start, _end, _acc) in enumerate(self.words):
+            if start <= t:
+                idx = i
+            else:
+                break
+        if idx is None and self.words and t >= self.words[0][1] - 0.2:
+            idx = 0
+        return idx
+
+    def _line(self, d, grp, idx, x0, y, fade, hide_future: bool):
+        space = self.f.getlength(" ")
+        x = x0
+        last = None
+        for w, i in grp:
+            acc = self.words[i][3]
+            if i > idx:
+                if hide_future:
+                    break
+                color, a = self.theme.fg, 0.28
+            elif i == idx:
+                color, a = self.theme.accent, 1.0
+            else:
+                color, a = (self.theme.accent if acc else self.theme.fg), 1.0
+            d.text((x, y), w, font=self.f, fill=(*color, int(255 * a * fade)))
+            wd = self.f.getlength(w)
+            if i == idx:
+                last = (x, wd)
+            x += wd + space
+        return x, last
+
+    def draw(self, frame: Image.Image, t: float, fade: float, y_center: float = 0) -> None:
+        idx = self._current(t)
+        if idx is None:
+            return
+        gi = self.group_of[idx]
+        grp = self.groups[gi]
+        space = self.f.getlength(" ")
+        total = sum(self.f.getlength(w) for w, _ in grp) + space * (len(grp) - 1)
+        if self.mode == "kinetic":
+            layer = Image.new("RGBA", (W, 520), (0, 0, 0, 0))
+            d = ImageDraw.Draw(layer, "RGBA")
+            if gi > 0:
+                prev = self.groups[gi - 1]
+                ptotal = sum(self.f.getlength(w) for w, _ in prev) + space * (len(prev) - 1)
+                self._line(d, prev, idx, (W - ptotal) / 2, 90, fade * 0.3, False)
+            end_x, _ = self._line(d, grp, idx, (W - total) / 2, 240, fade, True)
+            if int(t * 2.5) % 2 == 0:
+                d.rectangle((end_x - space + 12, 252, end_x - space + 44, 352), fill=(255, 45, 45, int(255 * fade)))
+            layer = layer.rotate(6, resample=Image.BICUBIC)
+            _paste(frame, layer, 0, y_center - 300)
+            return
+        d = ImageDraw.Draw(frame, "RGBA")
+        if self.mode == "top":
+            shown = [(w, i) for w, i in grp if i <= idx]
+            stotal = sum(self.f.getlength(w) for w, _ in shown) + space * (len(shown) - 1)
+            _, last = self._line(d, grp, idx, (W - stotal) / 2, 150, fade, True)
+            if last:
+                d.rounded_rectangle((last[0], 232, last[0] + last[1], 240), 4,
+                                    fill=(*self.theme.accent, int(255 * fade)))
+            return
+        self._line(d, grp, idx, (W - total) / 2, H - 300, fade, False)
+
+
+# ---------- Sahna ----------
+
+STICKER_SLOTS = [(170, 330), (W - 170, 520), (160, H - 560), (W - 160, H - 430)]
+
+
+class SceneRenderer:
+    def __init__(self, scene: Scene, spec: VideoSpec, index: int, count: int):
+        base = THEMES.get(spec.theme, THEMES["terminal"])
+        self.theme = theme = _scene_theme(base, scene)
+        self.scene, self.spec, self.index, self.count = scene, spec, index, count
+        self.bg = Background(theme, scene, index)
+
+        cap_mode = theme.captions if (spec.captions and scene.words) else "none"
+        if base.name == "kinetic" and scene.words:
+            cap_mode = "kinetic"
+        self.captions = Captions(scene.words, theme, cap_mode) if cap_mode != "none" else None
+
+        character = _asset(scene.character) if scene.character else None
+        self.side_character = None
+        blocks: list[Block] = []
+        t0 = 0.1
+        if character is not None and base.name == "glass":
+            ratio = 760 / character.height
+            self.side_character = character.resize((int(character.width * ratio), 760), Image.LANCZOS)
+        elif character is not None:
+            blocks.append(HeroBlock(character, 560, t0, True))
+            t0 += 0.2
+        elif scene.emoji and _asset(scene.emoji) is not None:
+            blocks.append(HeroBlock(_asset(scene.emoji), 260, t0, False))
+            t0 += 0.2
+        heading = scene.heading
+        if heading and not (cap_mode == "kinetic" and not scene.elements and not blocks):
+            blocks.append(HeadingBlock(heading, theme, t0))
+            t0 += 0.35
+        if scene.subheading:
+            blocks.append(TextBlock(scene.subheading, theme, t0))
+            t0 += 0.3
+        for el in scene.elements[:2]:
+            b = _element_block(el, theme, t0)
+            if b:
+                blocks.append(b)
+                t0 += 0.4
+        self.blocks = blocks
+
+        # Kontent maydoni
+        top, bottom = 220, 1560
+        if base.name == "glass":
+            top, bottom = (320 if self.captions else 200), (1150 if self.side_character else 1700)
+        elif base.name == "slides":
+            top, bottom = 200, 1720
+        elif cap_mode == "kinetic":
+            top, bottom = 200, 860
+        gap = 48
+        total = sum(b.height for b in blocks) + gap * max(0, len(blocks) - 1)
+        if theme.align == "left":
+            y = top + 40
+        else:
+            y = top + max(0, (bottom - top - total) / 2)
+        self.layout = []
+        for b in blocks:
+            self.layout.append((b, y))
+            y += b.height + gap
+        self.caption_y = 1250 if blocks else H / 2 + 120
+
+        self.stickers = [img for img in (_asset(s) for s in scene.stickers[:4]) if img is not None]
+        self._chrome_static()
+
+    def _chrome_static(self) -> None:
+        """Header/footer that stay constant for the scene (drawn into the background base)."""
+        base = getattr(self.bg, "base", None)
+        if base is None:
+            return
+        th, spec = self.theme, self.spec
+        d = ImageDraw.Draw(base, "RGBA")
+        small = font("mono", 26)
+        if th.name == "terminal":
+            for i, c in enumerate([(255, 95, 86), (255, 189, 46), (39, 201, 63)]):
+                d.ellipse((50 + i * 30, 62, 50 + i * 30 + 16, 78), fill=c)
+            label = spec.label or "product"
+            d.text((150, 70), f"root@{label}: ~/{(spec.handle or 'video').lstrip('@')}", font=small,
+                   fill=(*th.dim, 255), anchor="lm")
+            if spec.handle:
+                d.text((W / 2, H - 110), f"• {spec.handle}", font=small, fill=(*th.dim, 255), anchor="mm")
+        elif th.name == "slides":
+            if spec.handle:
+                d.text((MARGIN, 90), spec.handle, font=small, fill=(*th.dim, 255), anchor="lm")
+            d.text((W - MARGIN, 90), f"{self.index + 1:02d}/{self.count:02d}", font=small,
+                   fill=(*th.fg, 255), anchor="rm")
+        elif th.name == "kinetic":
+            if spec.handle:
+                d.text((W - MARGIN, 90), spec.handle.upper(), font=font("mono_bold", 26),
+                       fill=(*th.dim, 255), anchor="rm")
+        elif th.name == "glass" and spec.handle:
+            d.text((MARGIN, H - 90), spec.handle, font=font("sans_bold", 28), fill=(*th.dim, 255), anchor="lm")
+
+    def _chrome_dynamic(self, frame: Image.Image, progress: float, scene_p: float) -> None:
+        th = self.theme
+        d = ImageDraw.Draw(frame, "RGBA")
+        if th.name == "slides":
+            seg_w = (W - 2 * MARGIN - 10 * (self.count - 1)) / self.count
+            for i in range(self.count):
+                x = MARGIN + i * (seg_w + 10)
+                fill = 1.0 if i < self.index else (scene_p if i == self.index else 0.0)
+                d.rectangle((x, H - 120, x + seg_w, H - 114), fill=(*th.fg, 40))
+                if fill > 0:
+                    d.rectangle((x, H - 120, x + seg_w * fill, H - 114), fill=(*th.accent, 255))
+        elif th.name == "terminal":
+            d.rectangle((0, 0, W * progress, 6), fill=(*th.accent, 230))
+        else:
+            d.rectangle((0, H - 10, W * progress, H), fill=(*th.accent, 220))
+
+    def render(self, t: float, g: float, progress: float) -> Image.Image:
+        scene = self.scene
+        fade = _ease_out((scene.duration - t) / 0.35)
+        frame = self.bg.frame(t, g)
+        for k, (img, (sx, sy)) in enumerate(zip(self.stickers, STICKER_SLOTS)):
+            p = _ease_out_back((t - 0.5 - k * 0.2) / 0.5)
+            if p > 0.02:
+                size = int(160 * p)
+                icon = img.resize((size, max(2, int(size * img.height / img.width))), Image.BILINEAR)
+                icon = icon.rotate(math.sin(g * 1.8 + k) * 12, resample=Image.BICUBIC, expand=True)
+                _paste(frame, icon, sx - icon.width / 2, sy - icon.height / 2 + math.sin(g * 2 + k) * 20, fade)
+        if self.side_character is not None:
+            ch = self.side_character
+            p = _ease_out((t - 0.1) / 0.6)
+            d = ImageDraw.Draw(frame, "RGBA")
+            d.rounded_rectangle((W - ch.width - 90, H - 560 + (1 - p) * 200, W - 30, H + 60), 60,
+                                fill=(*self.theme.accent, int(40 * p * fade)))
+            _paste(frame, ch, W - ch.width - 60, H - ch.height + 40 + (1 - p) * 300 + math.sin(g * 2) * 8, p * fade)
+        for block, top in self.layout:
+            block.draw(frame, top, t, fade)
+        if self.captions:
+            self.captions.draw(frame, t, fade, self.caption_y)
+        self._chrome_dynamic(frame, progress, _clamp(t / scene.duration))
+        return frame
+
+
+def render_motion_video(scenes: list[Scene], spec: VideoSpec | None = None, audio_wav: bytes | None = None) -> Path:
     """Render scenes into an MP4 (optionally with a narration WAV track) and return its path."""
+    spec = spec or VideoSpec()
     out = config.MEDIA_DIR / f"{uuid.uuid4().hex[:12]}.mp4"
-    title_font, sub_font = _font(92), _font(52)
     total_frames = sum(int(s.duration * FPS) for s in scenes)
 
     audio_path = None
@@ -318,54 +1035,10 @@ def render_motion_video(scenes: list[Scene], audio_wav: bytes | None = None) -> 
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     frame_no = 0
     try:
-        for scene in scenes:
-            n = int(scene.duration * FPS)
-            acc = _hex(scene.accent)
-            bg = _BackgroundRenderer(scene)
-            title_lines = _wrap(scene.title, title_font, W - 160)
-            sub_lines = _wrap(scene.subtitle, sub_font, W - 200) if scene.subtitle else []
-            character = _asset(scene.character) if scene.character else None
-            hero = character or (_asset(scene.emoji) if scene.emoji else None)
-            stickers = [img for img in (_asset(s) for s in scene.stickers[:4]) if img is not None]
-            title_y = H // 2 - 20 if character else H // 2 - 60
-            txt, stroke = _text_colors(scene)
-            for i in range(n):
-                t = i / FPS
-                g = frame_no / FPS
-                fade_out = _ease_out((scene.duration - t) / 0.4)
-                frame = bg.frame(t, g)
-
-                if stickers:
-                    _draw_stickers(frame, stickers, t, fade_out, g)
-                if hero is not None:
-                    if character:
-                        _draw_hero(frame, hero, 600, H // 2 - 470, t, fade_out, g, slide=True)
-                    else:
-                        _draw_hero(frame, hero, 320, H // 2 - 460, t, fade_out, g, slide=False)
-
-                # Sarlavha: pastdan ko'tarilib chiqadi
-                p = _ease_out((t - 0.15) / 0.6)
-                _draw_text_block(frame, title_lines, title_font, title_y, p * fade_out, (1 - p) * 120, txt, stroke)
-                # Urg'u chizig'i
-                bw = int(320 * _ease_out((t - 0.45) / 0.5))
-                bar_y = title_y + (len(title_lines) * int(title_font.size * 1.25)) // 2 + 30
-                if bw > 0:
-                    bar = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-                    ImageDraw.Draw(bar).rounded_rectangle(
-                        ((W - bw) / 2, bar_y, (W + bw) / 2, bar_y + 12),
-                        radius=6, fill=(*acc, int(255 * fade_out)))
-                    frame.alpha_composite(bar)
-                # Kichik matn: biroz kechikib chiqadi
-                if sub_lines:
-                    q = _ease_out((t - 0.55) / 0.6)
-                    sub_y = bar_y + 60 + (len(sub_lines) * int(sub_font.size * 1.25)) // 2
-                    _draw_text_block(frame, sub_lines, sub_font, sub_y, q * fade_out, (1 - q) * 80, txt, stroke)
-                # Progress bar
-                prog = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-                ImageDraw.Draw(prog).rectangle(
-                    (0, H - 14, int(W * (frame_no + 1) / total_frames), H), fill=(*acc, 220))
-                frame.alpha_composite(prog)
-
+        for idx, scene in enumerate(scenes):
+            renderer = SceneRenderer(scene, spec, idx, len(scenes))
+            for i in range(int(scene.duration * FPS)):
+                frame = renderer.render(i / FPS, frame_no / FPS, (frame_no + 1) / total_frames)
                 proc.stdin.write(frame.convert("RGB").tobytes())
                 frame_no += 1
     finally:
