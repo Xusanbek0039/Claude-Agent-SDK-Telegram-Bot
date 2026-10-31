@@ -4,6 +4,7 @@ import asyncio
 import io
 import logging
 import subprocess
+import time
 import uuid
 import wave
 
@@ -149,3 +150,63 @@ def build_track(clips: list[tuple[float, bytes]], total_seconds: float) -> bytes
         w.setframerate(rate)
         w.writeframes(bytes(track))
     return out.getvalue()
+
+
+# ---------- O'zbekcha ovozlar katalogi ----------
+
+FREE_VOICES = [
+    {"id": "uz-UZ-SardorNeural", "name": "Sardor (bepul)", "gender": "male", "description": "Edge TTS", "free": True},
+    {"id": "uz-UZ-MadinaNeural", "name": "Madina (bepul)", "gender": "female", "description": "Edge TTS", "free": True},
+]
+_voice_cache: tuple[float, list[dict]] | None = None
+
+
+async def list_uzbek_voices(fresh: bool = False) -> list[dict]:
+    """All Uzbek VoiceLab voices (cached 5 min) followed by the free Edge voices."""
+    global _voice_cache
+    if _voice_cache and not fresh and time.time() - _voice_cache[0] < 300:
+        return _voice_cache[1]
+    voices: list[dict] = []
+    if config.VOICELAB_API_KEY:
+        headers = {"Authorization": f"Bearer {config.VOICELAB_API_KEY}"}
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                page = 1
+                while page:
+                    data = (await client.get(f"{BASE_URL}/voices", params={"page": page}, headers=headers)).json()
+                    for v in data.get("data", []):
+                        if v.get("language") == "uz":
+                            voices.append({
+                                "id": v["id"],
+                                "name": v.get("display_name") or v["name"],
+                                "gender": v.get("gender") or "",
+                                "description": v.get("short_description") or v.get("category") or "",
+                                "audio_url": v.get("audio_url"),
+                                "free": False,
+                            })
+                    page = data.get("pagination", {}).get("next_page")
+        except (httpx.HTTPError, ValueError, KeyError) as e:
+            log.warning("VoiceLab ovozlar ro'yxati olinmadi: %s", e)
+    voices += FREE_VOICES
+    for v in voices:
+        if v["gender"] == "female":
+            FEMALE_VOICES.add(v["id"])
+    _voice_cache = (time.time(), voices)
+    return voices
+
+
+async def voice_sample(voice: dict) -> bytes:
+    """Short MP3 sample of a voice (VoiceLab preview or generated Edge sample)."""
+    if voice.get("free"):
+        wav = await _edge("Assalomu alaykum! Men sizning videolaringizni ovozlashtiraman.", voice["id"], "uz")
+    else:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(voice["audio_url"])
+            resp.raise_for_status()
+            wav = resp.content
+    proc = await asyncio.to_thread(
+        subprocess.run,
+        ["ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-b:a", "96k", "-f", "mp3", "pipe:1"],
+        input=wav, capture_output=True, check=True,
+    )
+    return proc.stdout

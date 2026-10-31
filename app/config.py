@@ -55,3 +55,11 @@ TTS_PROVIDER = os.getenv("TTS_PROVIDER", "auto").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2")
 OPENAI_IMAGE_QUALITY = os.getenv("OPENAI_IMAGE_QUALITY", "medium")
+
+# Shaxsiy avatar: shu papkadagi rasmlaringizdan 3D qahramon-stikerlar yasaladi
+_ROOT = Path(__file__).resolve().parent.parent
+AVATAR_DIR = Path(os.getenv("AVATAR_DIR", _ROOT / "husanbek")).resolve()
+# Yaratilgan avatarlar keshi (repo'ga qo'shsangiz Render'da qayta pul to'lanmaydi)
+AVATAR_CACHE_DIR = Path(os.getenv("AVATAR_CACHE_DIR", _ROOT / "avatar_cache")).resolve()
+AVATAR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+AVATAR_STYLE = os.getenv("AVATAR_STYLE", "Wearing a dark grey hoodie, modern young IT creator look")
