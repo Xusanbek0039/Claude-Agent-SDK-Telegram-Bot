@@ -1,0 +1,6 @@
+anthropic>=2.3.0,<3
+python-telegram-bot>=22.0,<23
+aiohttp>=3.9
+httpx>=0.28
+pillow>=11.0
+python-dotenv>=1.0

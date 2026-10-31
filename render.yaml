@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: claude-instagram-bot
+    runtime: docker
+    plan: starter        # free plan uxlab qoladi va 512MB RAM video uchun kam
+    healthCheckPath: /
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ALLOWED_USER_IDS
+        sync: false
+      - key: IG_USER_ID
+        sync: false
+      - key: IG_ACCESS_TOKEN
+        sync: false
+      - key: IG_GRAPH_HOST
+        value: graph.facebook.com
+      - key: CLAUDE_MODEL
+        value: claude-opus-5-5
+      - key: WEBHOOK_SECRET
+        generateValue: true
