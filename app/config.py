@@ -14,7 +14,10 @@ def _required(name: str) -> str:
 
 
 TELEGRAM_BOT_TOKEN = _required("TELEGRAM_BOT_TOKEN")
-ANTHROPIC_API_KEY = _required("ANTHROPIC_API_KEY")
+# Claude autentifikatsiyasi: claude.ai obunasi (`claude setup-token`) yoki API key.
+# Ikkalasi ham Claude Code CLI tomonidan muhitdan o'qiladi.
+if not (os.getenv("CLAUDE_CODE_OAUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")):
+    raise RuntimeError("CLAUDE_CODE_OAUTH_TOKEN (yoki ANTHROPIC_API_KEY) o'rnatilmagan")
 
 # Faqat shu Telegram user ID'lar botdan foydalana oladi (vergul bilan ajrating)
 ALLOWED_USER_IDS = {
