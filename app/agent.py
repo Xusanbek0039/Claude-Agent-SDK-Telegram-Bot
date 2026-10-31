@@ -20,7 +20,9 @@ from claude_agent_sdk import (
     tool,
 )
 
-from . import config, instagram
+import httpx
+
+from . import config, instagram, tts
 from .video import Scene, render_motion_video
 
 log = logging.getLogger(__name__)
@@ -29,10 +31,22 @@ SYSTEM_PROMPT = """Sen foydalanuvchining Instagram akkauntini boshqaradigan SMM 
 Foydalanuvchi bilan o'zbek tilida, qisqa va aniq gaplash. Javoblaring Telegram'da ko'rsatiladi.
 
 Imkoniyatlaring:
-- create_motion_video: vertikal (9:16) motion video yaratish. Har bir sahna qisqa, kuchli sarlavha
-  (5-7 so'z) va ixtiyoriy kichik matndan iborat. Reels uchun 3-6 sahna, jami 10-25 soniya yaxshi.
-  Mavzuga mos rang palitrasini tanla (hex ranglar). Video matnida emoji ishlatma (shrift
-  ularni ko'rsatmaydi); emoji faqat caption'da bo'lsin.
+- create_motion_video: vertikal (9:16) motion video yaratish, ovozli. Reels uchun 3-6 sahna.
+  Har bir sahnada:
+  * emoji: sahna mavzusiga mos bitta katta animatsiyali emoji (masalan ☕, 🔥, 🚀, 💡) - deyarli
+    har sahnaga qo'y, video jonli chiqadi;
+  * title: qisqa, kuchli sarlavha (5-7 so'z), ichida 1 ta emoji bo'lishi mumkin;
+  * subtitle: ixtiyoriy kichik matn;
+  * narration: diktor o'qiydigan matn (1-2 jumla, sahna matnini to'ldiradi, emoji'siz,
+    raqamlarni so'z bilan yoz: "8:00" emas "soat sakkizda"). Sahna davomiyligi ovozga moslanadi.
+  Mavzuga mos rang palitrasini tanla (hex ranglar). Diktor ovozini mavzuga qarab tanla:
+  * voice_fa56cecf-9b0b-45ba-9ec3-494efb5b301f - Javohir, yorqin taqdimotchi (erkak, default)
+  * voice_8bae02c6-d078-4757-9d62-0fce6da23cf7 - Amir, iliq hikoyachi (erkak)
+  * voice_5e592ada-eca8-42e3-98fa-469c1c8fc999 - Botir, energik streamer (erkak)
+  * voice_4ef06e6b-2229-4023-ad66-c2a7a2b736ff - Madina, yumshoq (ayol)
+  * voice_3602ec76-5393-43b6-9e0d-784328cb77ba - Nozima, yumshoq (ayol)
+  * voice_7b350d91-4e56-4bc3-869c-8cd6ba646c3c - Gulya, quvnoq streamer (ayol)
+  Foydalanuvchi ovozsiz video so'rasa, narration'larni bo'sh qoldir.
 - request_publish: tayyor videoni Instagram'ga chiqarish uchun foydalanuvchidan tasdiq so'rash.
   Caption'ni jozibali yoz: hook, qisqa matn, chaqiriq (CTA) va 5-10 ta mos hashtag.
 - get_instagram_account: akkaunt statistikasini ko'rish.
@@ -75,6 +89,21 @@ def _text(msg: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": msg}]}
 
 
+async def _narrate(scenes: list[Scene], voice_id: str, language: str) -> bytes:
+    """Synthesize each scene's narration and stretch scene durations to fit."""
+    clips = await asyncio.gather(
+        *(tts.synthesize(s.narration, voice_id, language) if s.narration else asyncio.sleep(0, None)
+          for s in scenes)
+    )
+    placed, start = [], 0.0
+    for scene, clip in zip(scenes, clips):
+        if clip:
+            scene.duration = max(scene.duration, tts.wav_duration(clip) + 0.8)
+            placed.append((start + 0.3, clip))
+        start += scene.duration
+    return tts.build_track(placed, start)
+
+
 def _build_server(io: ChatIO):
     @tool(
         "create_motion_video",
@@ -91,7 +120,9 @@ def _build_server(io: ChatIO):
                         "properties": {
                             "title": {"type": "string", "description": "Short punchy title"},
                             "subtitle": {"type": "string", "description": "Optional smaller text"},
-                            "duration": {"type": "number", "description": "Seconds, 2-6"},
+                            "duration": {"type": "number", "description": "Minimum seconds, 2-6 (extended to fit narration)"},
+                            "emoji": {"type": "string", "description": "One big animated emoji for the scene"},
+                            "narration": {"type": "string", "description": "Voice-over text for this scene (no emoji)"},
                         },
                         "required": ["title"],
                     },
@@ -99,6 +130,8 @@ def _build_server(io: ChatIO):
                 "color_top": {"type": "string", "description": "Gradient top hex, e.g. #1e1b4b"},
                 "color_bottom": {"type": "string", "description": "Gradient bottom hex"},
                 "accent": {"type": "string", "description": "Accent hex for shapes/underline"},
+                "voice_id": {"type": "string", "description": "VoiceLab voice id for narration"},
+                "language": {"type": "string", "description": "Narration language code: uz, ru, en"},
             },
             "required": ["scenes"],
         },
@@ -106,23 +139,34 @@ def _build_server(io: ChatIO):
     async def create_motion_video(args: dict[str, Any]) -> dict[str, Any]:
         scenes = [
             Scene(
-                s["title"],
-                s.get("subtitle", ""),
-                max(1.5, min(8.0, float(s.get("duration", 3)))),
+                title=s["title"],
+                subtitle=s.get("subtitle", ""),
+                duration=max(1.5, min(8.0, float(s.get("duration", 3)))),
+                emoji=s.get("emoji", ""),
+                narration=s.get("narration", "").strip(),
             )
             for s in args["scenes"]
         ]
+        audio = None
+        note = ""
+        if tts.is_configured() and any(s.narration for s in scenes):
+            try:
+                audio = await _narrate(scenes, args.get("voice_id", ""), args.get("language", "uz"))
+            except (tts.TTSError, httpx.HTTPError) as e:
+                log.exception("TTS xatosi")
+                note = f" Ovoz qo'shilmadi (VoiceLab xatosi: {e})."
         path = await asyncio.to_thread(
             render_motion_video,
             scenes,
             args.get("color_top", "#1e1b4b"),
             args.get("color_bottom", "#7c3aed"),
             args.get("accent", "#facc15"),
+            audio_wav=audio,
         )
         video_id = path.stem
         videos[video_id] = path
         await io.send_video(path, f"🎬 Video tayyor (id: {video_id})")
-        return _text(f"Video yaratildi va foydalanuvchiga yuborildi. video_id={video_id}")
+        return _text(f"Video yaratildi va foydalanuvchiga yuborildi. video_id={video_id}.{note}")
 
     @tool(
         "request_publish",
