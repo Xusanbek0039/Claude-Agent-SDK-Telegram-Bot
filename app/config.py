@@ -44,3 +44,7 @@ MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "media")).resolve()
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 FONT_PATH = os.getenv("FONT_PATH", "")
+
+# VoiceLab TTS (ovoz). Default: "Javohir — Bright presenter"
+VOICELAB_API_KEY = os.getenv("VOICELAB_API_KEY", "")
+VOICELAB_VOICE_ID = os.getenv("VOICELAB_VOICE_ID", "voice_fa56cecf-9b0b-45ba-9ec3-494efb5b301f")
