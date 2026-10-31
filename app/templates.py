@@ -164,3 +164,102 @@ def agent_prompt(t: Template, user_text: str) -> str:
     return (f"[SHABLON: {t.name} — {t.sample}-namuna uslubida]\n{COMMON}\n"
             f"create_motion_video: theme=\"{t.theme}\", music=\"{t.music}\".\n{t.guide}\n\n"
             f"Foydalanuvchi topshirig'i: {user_text}")
+
+
+# Har bir shablon uchun 3 ta tayyor prompt (botda nusxa olish yoki tugma bilan darhol ishga tushirish)
+EXAMPLES: dict[str, tuple[str, ...]] = {
+    "chat-ekran": (
+        "Claude Code'ning eng foydali 6 ta buyrug'i: /init, /review, /compact va boshqalar. Har biri nima qilishini qisqa ko'rsat. Buyruq: /buyruqlar. Nikim @husanbek_coder",
+        "Claude'da video montaj effektlari: match-cut, screen-push, liquid-glass. Har bir effektni alohida sahnada tanishtir. Buyruq: /effektlar",
+        "Claude Code bilan 1 daqiqada sayt yasash: so'rov yozish, kod yaratish, ishga tushirish bosqichlari. Buyruq: /sayt",
+    ),
+    "terminal": (
+        "Saytlardagi 5 ta eng xavfli xato (OWASP): Broken Access Control, SQL injection, zaif parollar. Xakerlar qanday hujum qilishini kod bilan ko'rsat. Nikim @husanbek_coder",
+        "Parolingiz 1 soniyada buzilishi mumkin: brute-force qanday ishlaydi, kuchli parol qoidalari va 2FA. Statistikalar bilan",
+        "Telegram akkauntingizni o'g'irlashning 4 ta usuli va har biridan qanday himoyalanish kerak",
+    ),
+    "glass-qahramon": (
+        "Claude Code bilan 5 daqiqada motion video yasash bo'yicha qo'llanma. Har sahnada mening qahramonim boshqa pozada bo'lsin. Nikim @husanbek_coder",
+        "Dasturlashni noldan boshlash uchun 5 ta maslahat: qaysi tildan boshlash, qayerdan o'rganish, qanday mashq qilish",
+        "Sun'iy intellekt bilan ishlashda 4 ta eng ko'p uchraydigan xato va ularni qanday tuzatish kerak",
+    ),
+    "karusel": (
+        "Prompt yozish formulasi: subyekt + harakat + joy + kamera + uslub. 8 slaydli qo'llanma, misollar bilan. Nikim @husanbek_coder",
+        "Freelance'da birinchi buyurtmani olish: 7 slayd — portfolio, platforma tanlash, narx belgilash, mijoz bilan muloqot",
+        "ChatGPT va Claude farqi: 6 slaydda qaysi biri qaysi ish uchun yaxshi",
+    ),
+    "kinetik": (
+        "Yolg'izlik va o'zini topish haqida his-tuyg'uli matn: kechalari uxlay olmaslik, o'ylar, va oxirida umid. Ayol ovozi emas, mening ovozim",
+        "Ota-onaning qadri haqida qisqa va ta'sirli matn: ular borida qadrlang",
+        "Muvaffaqiyatsizlikdan keyin qayta turish haqida motivatsion his-tuyg'uli matn",
+    ),
+    "kod-sheriyat": (
+        "Dasturchi hayoti haqida kod ko'rinishidagi she'r: while (hayot) { o'rgan(); xato_qil(); qayta_urin(); }",
+        "Sevgi haqida kod tilida yozilgan she'r: if (sen.yonimda) { kun = yorug'; }",
+        "Yoz va xotiralar haqida kod ko'rinishidagi nostalgik she'r",
+    ),
+    "top-royxat": (
+        "Dasturchilar uchun 7 ta foydali AI vosita: har birining nomi va nima qilishi bitta kartochkada. Oxirida kommentga yozing chaqirig'i. Nikim @husanbek_coder",
+        "Claude uchun 10 ta kuchli GitHub repo: nomi va qisqa vazifasi bilan",
+        "Talabalar uchun 5 ta bepul o'quv platformasi: nomi, nima o'rgatadi, narxi",
+    ),
+    "lime-biznes": (
+        "Biznesingizni AI bilan avtomatlashtirish: mijozlarga kechikib javob berish, unutilgan lidlar, yiliga 291 soat yo'qotish va AI yechimi. Nikim @husanbek_coder",
+        "Kichik do'kon egasi uchun Telegram bot: buyurtmalar, to'lov va hisobotlar avtomatik",
+        "Nega sizning Instagram sahifangiz mijoz olib kelmayapti va buni AI qanday tuzatadi",
+    ),
+    "minimal-qora": (
+        "Ponytail skill: AI agentni senior dasturchiga aylantirish. Chiqish tokenlari 45% kamayishi, kod sifati, va lite/full rejimlari. Oxirida profil. Nikim @husanbek_coder",
+        "Claude Code'da CLAUDE.md fayli nima uchun kerak va uni qanday to'g'ri yozish kerak",
+        "Kodni review qilishda AI'dan foydalanish: 3 ta amaliy misol",
+    ),
+    "neon-tushuntirish": (
+        "Harness engineering nima: model, infratuzilma va bir nechta agentlar (frontend, backend, review) qanday birga ishlaydi. Diagrammalar bilan. Mavzu: Harness",
+        "MCP (Model Context Protocol) nima va u AI'ga qanday qilib vositalar beradi — oddiy tilda tushuntir",
+        "AI agent qanday ishlaydi: rejalashtirish, vositalar, xotira va tekshirish — diagramma bilan",
+    ),
+    "personaj-dialog": (
+        "Men va Claude o'rtasida kulgili suhbat: mening ovozim yo'qolib qoldi, Reels esa bugun kerak, Claude ovozimni klonlab yordam beradi",
+        "Men Claude'dan dars qilishni so'rayman, u esa meni o'zim o'rganishga undaydi — qisqa kulgili dialog",
+        "Claude bilan bahs: kim tezroq kod yozadi? Oxirida birga ishlash eng yaxshisi degan xulosa",
+    ),
+    "biznes-avtomatlash": (
+        "Telegram bot va AI agent biznesga qanday mijoz olib keladi: mijoz yozadi, siz javob bermaysiz, raqobatchi sotadi — bot esa darhol javob beradi. Nikim @husanbek_coder",
+        "Restoran uchun buyurtma boti: menyu, buyurtma, yetkazib berish — telefon chatida ko'rsat",
+        "Onlayn kurs sotish uchun avtomat voronka: reklama, bot, to'lov, kursga kirish",
+    ),
+    "neon-lab-hikoya": (
+        "Claude'ga dasturni tahlil qildirish 3 qismda: 1 · vazifa beramiz, 2 · dalillarni topadi, 3 · o'xshash funksiyani yaratadi. Men va Claude dialogi. Nikim @husanbek_coder",
+        "Claude bilan buzilgan saytni tuzatish hikoyasi: xatoni topish, sababini tushunish, tuzatish",
+        "Claude'ga eski loyihani yangilatish: 3 bosqichli hikoya, dialog ko'rinishida",
+    ),
+    "neon-lab-qadam": (
+        "GitHub'dagi repo'ni Claude bilan o'rnatish va ishlatish: 01 · o'rnatish, 02 · nima qiladi, 03 · qayta yaratish. Nikim @husanbek_coder",
+        "Claude Code'ni kompyuterga o'rnatish bosqichlari: 01 · Node.js, 02 · o'rnatish buyrug'i, 03 · birinchi so'rov",
+        "Telegram bot yaratish: 01 · BotFather, 02 · token, 03 · kod, 04 · ishga tushirish",
+    ),
+    "retro": (
+        "Motivatsiya: nima qilish kerakligini bilish yetarli emas, harakat qilish kerak. Qisqa va kuchli iboralar bilan",
+        "Mashg'ulot mavsumi boshlandi: intizom, har kungi kichik qadamlar, natija",
+        "Orzu qilish emas, boshlash kerak: bugun birinchi qadamni qo'y",
+    ),
+    "ember": (
+        "Google NotebookLM: 2 soatlik videoni 5 daqiqada o'rganish — manbalarni yuklash, savol berish, studiyada audiopodkast va testlar. Oxirida profil. Nikim @husanbek_coder",
+        "Kitobni 10 daqiqada tushunish uchun AI usuli: xulosa, asosiy g'oyalar, savollar",
+        "YouTube videolaridan konspekt tayyorlashning eng tez usuli",
+    ),
+    "monitor": (
+        "AI xotirasi: Claude keyingi suhbatda sizni qanday eslab qoladi — eslatmalar fayli, odatlaringiz, va 'Salom! Men Klodman' bilan yakun",
+        "Dasturchining kechasi: monitor oldida xatoni qidirish va nihoyat topish haqida monolog",
+        "AI yordamchining birinchi ish kuni haqida kulgili monolog",
+    ),
+    "pastel-demo": (
+        "Raqobatchining ilovasidagi funksiyani Claude bilan qayta yaratish: 1 · tahlil, 2 · oddiy so'zlar bilan tushuntirish, 3 · loyihaga qo'shish. Oxirida profil. Nikim @husanbek_coder",
+        "Fitnes ilovasi demo: kunlik qadamlar, mashqni boshlash tugmasi va natijalar — telefon maketida",
+        "Yangi to'lov funksiyasini foydalanuvchilarga tanishtirish: 3 qadamda qanday ishlaydi",
+    ),
+}
+
+
+def examples(t: Template) -> tuple[str, ...]:
+    return EXAMPLES.get(t.id, (t.example,))

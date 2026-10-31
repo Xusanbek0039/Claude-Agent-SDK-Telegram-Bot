@@ -6,6 +6,7 @@ Lokal (PUBLIC_URL yo'q): polling rejimi.
 
 import asyncio
 import contextlib
+import html
 import logging
 import uuid
 from pathlib import Path
@@ -161,20 +162,49 @@ async def handle_template(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if t is None:
         return
     pending_templates[chat_id] = t.id
-    text = (f"{t.name}  ·  {t.sample}-namuna uslubi\n\n"
-            f"🎞 Video qanday chiqadi:\n{t.description}\n\n"
-            f"📝 Buyruq namunasi:\n«{t.example}»\n\n"
-            f"✍️ Endi video mavzusini yoki matnini yozing (ovozli xabar emas, matn).")
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("↩️ Boshqa shablon", callback_data="tpl:list"),
-        InlineKeyboardButton("❌ Bekor qilish", callback_data="tpl:cancel"),
-    ]])
+    about = f"{t.name}  ·  {t.sample}-namuna uslubi\n\n🎞 Video qanday chiqadi:\n{t.description}"
     preview = PREVIEWS / f"{t.id}.jpg"
-    if preview.exists() and len(text) <= 1024:
+    if preview.exists() and len(about) <= 1024:
         with preview.open("rb") as f:
-            await context.bot.send_photo(chat_id, f, caption=text, reply_markup=keyboard)
+            await context.bot.send_photo(chat_id, f, caption=about)
     else:
-        await context.bot.send_message(chat_id, text, reply_markup=keyboard)
+        await context.bot.send_message(chat_id, about)
+
+    # Tayyor promptlar: matn ustiga bosilsa nusxa olinadi, tugma bosilsa darhol video yasaladi
+    prompts = templates.examples(t)
+    numbers = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+    lines = [f"{numbers[i]} <code>{html.escape(p)}</code>" for i, p in enumerate(prompts)]
+    text = ("📝 <b>Tayyor promptlar</b> (ustiga bosing — nusxa olinadi, o'zgartirib yuborishingiz mumkin):\n\n"
+            + "\n\n".join(lines)
+            + "\n\n▶️ Tugmani bossangiz, prompt darhol ishga tushadi.\n"
+              "✍️ Yoki o'z mavzuingizni yozing.")
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"▶️ {numbers[i]}", callback_data=f"tpr:{t.id}:{i}") for i in range(len(prompts))],
+        [InlineKeyboardButton("↩️ Boshqa shablon", callback_data="tpl:list"),
+         InlineKeyboardButton("❌ Bekor qilish", callback_data="tpl:cancel")],
+    ])
+    await context.bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def handle_template_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """▶️ tugmasi: tanlangan tayyor prompt bilan darhol video yasash."""
+    query = update.callback_query
+    if not _allowed(update):
+        await query.answer("Ruxsat yo'q", show_alert=True)
+        return
+    _, tid, idx = query.data.split(":", 2)
+    t = templates.BY_ID.get(tid)
+    prompts = templates.examples(t) if t else ()
+    if not t or not idx.isdigit() or int(idx) >= len(prompts):
+        await query.answer("Bu prompt eskirgan", show_alert=True)
+        return
+    await query.answer("Video tayyorlanmoqda...")
+    chat_id = update.effective_chat.id
+    pending_templates.pop(chat_id, None)
+    await query.edit_message_reply_markup(None)
+    prompt = prompts[int(idx)]
+    await context.bot.send_message(chat_id, f"⏳ «{t.name}» shablonida video tayyorlanmoqda (1-3 daqiqa):\n\n{prompt}")
+    await _run_agent(chat_id, templates.agent_prompt(t, prompt), context)
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -284,6 +314,7 @@ def build_application(webhook: bool) -> Application:
     app.add_handler(CommandHandler("new", new_chat))
     app.add_handler(CommandHandler("shablon", shablon))
     app.add_handler(CallbackQueryHandler(handle_template, pattern=r"^tpl:"))
+    app.add_handler(CallbackQueryHandler(handle_template_prompt, pattern=r"^tpr:"))
     app.add_handler(CallbackQueryHandler(handle_answer, pattern=r"^ask:"))
     app.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^(pub|cancel):"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
