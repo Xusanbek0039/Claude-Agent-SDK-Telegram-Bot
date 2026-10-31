@@ -17,6 +17,8 @@ services:
         sync: false
       - key: VOICELAB_API_KEY
         sync: false
+      - key: OPENAI_API_KEY
+        sync: false
       - key: IG_GRAPH_HOST
         value: graph.facebook.com
       - key: CLAUDE_MODEL

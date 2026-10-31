@@ -88,9 +88,7 @@ async def _run_agent(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE
             InlineKeyboardButton("❌ Bekor qilish", callback_data=f"cancel:{post_id}"),
         ]])
         await bot.send_message(
-            chat_id, f"📤 Instagram'ga chiqaraymi?
-
-{caption}", reply_markup=keyboard
+            chat_id, f"📤 Instagram'ga chiqaraymi?\n\n{caption}", reply_markup=keyboard
         )
 
     async def ask(question: str, options: list[str]) -> None:
@@ -99,9 +97,7 @@ async def _run_agent(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE
         rows = [[InlineKeyboardButton(o, callback_data=f"ask:{qid}:{i}")] for i, o in enumerate(options)]
         rows.append([InlineKeyboardButton("🎲 O'zing tanla", callback_data=f"ask:{qid}:auto")])
         await bot.send_message(
-            chat_id, f"❓ {question}
-
-(Tugmani bosing yoki o'z variantingizni yozing)",
+            chat_id, f"❓ {question}\n\n(Tugmani bosing yoki o'z variantingizni yozing)",
             reply_markup=InlineKeyboardMarkup(rows),
         )
 
@@ -139,9 +135,7 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     question, options = entry
     answer = "O'zing eng yaxshisini tanla" if choice == "auto" else options[int(choice)]
-    await query.edit_message_text(f"❓ {question}
-
-✅ {answer}")
+    await query.edit_message_text(f"❓ {question}\n\n✅ {answer}")
     await _run_agent(update.effective_chat.id, f"[{question}] javobim: {answer}", context)
 
 

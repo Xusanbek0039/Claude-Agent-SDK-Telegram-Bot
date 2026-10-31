@@ -153,7 +153,8 @@ def _build_server(io: ChatIO):
     @tool(
         "ask_user",
         "Send the user a question with tappable option buttons (a quick poll). "
-        "The user's choice arrives as their next message, so end your turn after calling this.",
+        "The user's choice arrives as their next message, so end your turn after calling this. "
+        "A 'let the assistant decide' button is added automatically; do not include one.",
         {
             "type": "object",
             "properties": {
