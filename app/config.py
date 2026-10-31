@@ -69,3 +69,7 @@ _wm = os.getenv("WATERMARK_PATH", str(_ROOT / "husanbek-coder.png"))
 WATERMARK_PATH = Path(_wm).resolve() if _wm else None
 WATERMARK_WIDTH = int(os.getenv("WATERMARK_WIDTH", "300"))
 WATERMARK_OPACITY = float(os.getenv("WATERMARK_OPACITY", "0.9"))
+
+# Outro: har bir video oxiriga qo'shiladigan brend videosi (qora fon shaffof qilinadi; bo'sh = o'chiq)
+_outro = os.getenv("OUTRO_PATH", str(_ROOT / "husanbek-coder.mp4"))
+OUTRO_PATH = Path(_outro).resolve() if _outro else None

@@ -74,6 +74,10 @@ Elementlar: `cards`, `list`, `code`, `number`, `chips`. Shriftlar (Inter, JetBra
 
 Bot yaratgan har bir videoning o'ng pastki burchagiga `husanbek-coder.png` logosi qo'yiladi. Logo orqasida yarim shaffof to'q plashka bor, shuning uchun och fonda ham o'qiladi. Sozlamalar: `WATERMARK_PATH`, `WATERMARK_WIDTH`, `WATERMARK_OPACITY`. Render'da ishlashi uchun `husanbek-coder.png` repo'ga commit qilingan bo'lishi kerak.
 
+## Outro
+
+Har bir video oxiriga `husanbek-coder.mp4` (5 s) qo'shiladi. Uning qora foni shaffof qilinadi va logo oxirgi sahnaning foni ustida chiqadi. Video och bo'lsa, logodagi oq yozuv to'q rangga o'tadi, rangli nurlar o'zgarmaydi. Sozlama: `OUTRO_PATH`.
+
 ## Shaxsiy avatar
 
 `husanbek/` papkasidagi rasmlardan OpenAI (`gpt-image-2`) 3D qahramon-stikerlar yasaydi. Har bir poza `avatar_cache/` ga saqlanadi va qayta pul to'lanmaydi. `husanbek/` papkasi `.gitignore` da. Render'da yangi pozalar yaratilishi kerak bo'lsa, rasmlarni xususiy (private) repo orqali yuklang yoki `avatar_cache/` dagi tayyor pozalarni commit qiling.

@@ -18,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import httpx
+import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from . import config
@@ -1050,6 +1051,59 @@ def watermark() -> Image.Image | None:
     return _with_alpha(stamp, config.WATERMARK_OPACITY)
 
 
+DARK_INK = np.array([0.06, 0.08, 0.16], dtype=np.float32)
+
+
+def _outro_frames(bg: "Background", last: Image.Image, g0: float):
+    """Yield outro frames: the brand clip (black background) keyed out as light and composited
+    over the last scene's background. Light backgrounds get dark-ink text so it stays readable."""
+    path = config.OUTRO_PATH
+    if not path or not path.exists():
+        return
+    try:
+        info = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+             "-of", "csv=p=0", str(path)], capture_output=True, text=True, check=True).stdout
+        sw, sh = (int(v) for v in info.strip().split(",")[:2])
+    except (subprocess.CalledProcessError, ValueError):
+        log.warning("Outro o'qilmadi: %s", path)
+        return
+    ow = W - 40
+    oh = int(sh * ow / sw) // 2 * 2
+    y0 = (H - oh) // 2
+    reader = subprocess.Popen(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-vf", f"scale={ow}:{oh},fps={FPS}",
+         "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
+    first_bg = np.asarray(bg.frame(0, g0), dtype=np.float32) / 255
+    light = float(first_bg.mean()) > 0.55
+    size = ow * oh * 3
+    i = 0
+    try:
+        while True:
+            raw = reader.stdout.read(size)
+            if len(raw) < size:
+                break
+            src = np.frombuffer(raw, np.uint8).reshape(oh, ow, 3).astype(np.float32) / 255
+            alpha = np.clip((src.max(axis=2, keepdims=True) - 0.05) / 0.95, 0, 1)
+            color = np.clip(src / np.maximum(alpha, 1e-3), 0, 1)
+            if light:
+                white = np.clip((color.min(axis=2, keepdims=True) - 0.5) / 0.35, 0, 1)
+                color = color * (1 - white) + DARK_INK * white
+                alpha = np.clip(alpha * 1.25, 0, 1)
+            t = i / FPS
+            frame = np.asarray(bg.frame(t, g0 + t), dtype=np.float32) / 255
+            frame[y0 : y0 + oh, 20 : 20 + ow] = frame[y0 : y0 + oh, 20 : 20 + ow] * (1 - alpha) + color * alpha
+            out = Image.fromarray((frame * 255).astype(np.uint8))
+            blend = _clamp(t / 0.4)  # oxirgi sahnadan silliq o'tish
+            if blend < 1:
+                out = Image.blend(last, out, blend)
+            yield out
+            i += 1
+    finally:
+        reader.stdout.close()
+        reader.wait()
+
+
 def render_motion_video(scenes: list[Scene], spec: VideoSpec | None = None, audio_wav: bytes | None = None) -> Path:
     """Render scenes into an MP4 (optionally with a narration WAV track) and return its path."""
     spec = spec or VideoSpec()
@@ -1060,7 +1114,8 @@ def render_motion_video(scenes: list[Scene], spec: VideoSpec | None = None, audi
     if audio_wav:
         audio_path = out.with_suffix(".wav")
         audio_path.write_bytes(audio_wav)
-        audio_input = ["-i", str(audio_path)]
+        # apad: ovoz tugagach jimlik, video (outro bilan) oxirigacha davom etadi
+        audio_input = ["-i", str(audio_path), "-af", "apad"]
     else:
         # Instagram uchun jim AAC audio trek
         audio_input = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
@@ -1086,6 +1141,11 @@ def render_motion_video(scenes: list[Scene], spec: VideoSpec | None = None, audi
                     frame.paste(mark, (W - mark.width - 30, H - 135 - mark.height), mark)
                 proc.stdin.write(frame.convert("RGB").tobytes())
                 frame_no += 1
+        # Outro: brend videosi oxirgi sahna foni ustida (shaffof)
+        if scenes:
+            last = frame.convert("RGB")
+            for frame in _outro_frames(renderer.bg, last, frame_no / FPS):
+                proc.stdin.write(frame.tobytes())
     finally:
         proc.stdin.close()
         code = proc.wait()
