@@ -74,12 +74,19 @@ async def _voicelab(client: httpx.AsyncClient, text: str, voice_id: str, languag
 
 def _to_wav(audio: bytes) -> bytes:
     """Any audio -> 24 kHz mono 16-bit WAV (so clips can be mixed into one track)."""
+    # Xom PCM olamiz: pipe'ga yozilgan WAV sarlavhasida uzunlik noto'g'ri bo'ladi
     proc = subprocess.run(
         ["ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-ar", "24000", "-ac", "1",
-         "-sample_fmt", "s16", "-f", "wav", "pipe:1"],
+         "-f", "s16le", "pipe:1"],
         input=audio, capture_output=True, check=True,
     )
-    return proc.stdout
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(proc.stdout)
+    return out.getvalue()
 
 
 async def _edge(text: str, voice_id: str, language: str) -> bytes:
