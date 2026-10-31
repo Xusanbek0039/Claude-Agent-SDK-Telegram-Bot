@@ -28,7 +28,7 @@ from .video import (
     THEME_NAMES,
     Scene,
     VideoSpec,
-    narration_words,
+    align_words,
     render_motion_video,
     strip_markup,
 )
@@ -47,16 +47,27 @@ Har bir savoldan keyin javobingni qisqa yakunla va tanlovni kut: u keyingi xabar
    "🖥 Terminal — qora, yashil kod uslubi", "🪟 Glass — och, qahramonli",
    "📑 Slaydlar — katta sarlavha, ro'yxatlar", "⌨️ Kinetik matn — qora, yoziluvchi matn",
    "🌈 Rangli gradient".
-3. Diktor ovozini ask_voice bilan so'ra (faqat o'zbekcha ovozlar). Undan oldin mavzuga mos
-   3 tasining namunasini send_voice_samples bilan yubor. Foydalanuvchi ovozsiz desa - narration yo'q.
+3. Diktor ovozi: foydalanuvchining O'Z klon ovozi bor (voice_id="men") - odatiy shu ovozni
+   ishlat va ovoz haqida so'rama. Faqat foydalanuvchi boshqa ovoz xohlasa ask_voice bilan
+   so'ra (Sardor / Madina uslublari ham bor) va send_voice_samples bilan namuna yubor.
+   Foydalanuvchi ovozsiz desa - narration yo'q.
 4. Keyin videoni yasa. "O'zing tanla" deyilsa, o'zing eng yaxshisini tanla.
 Topshiriq to'liq aniq bo'lsa (uslub va ovoz aytilgan), savolsiz yasa.
 
 ## Video tuzilishi (create_motion_video) — namunalar uslubida
 - theme: terminal | glass | slides | kinetic | classic. Butun video bitta uslubda.
 - handle: foydalanuvchi nikneymi (bilmasang so'ramasdan bo'sh qoldir), label: mavzu so'zi.
-- 5-10 sahna, har sahna 1 fikr. Har sahnada narration (diktor matni, 1-2 jumla, emoji'siz,
-  raqamlarni so'z bilan). So'zma-so'z subtitr avtomatik chiqadi.
+- 5-10 sahna, har sahna 1 fikr. HAR sahnada narration bo'lsin — dublaj butun video bo'ylab
+  uzluksiz, jonli va professional eshitilsin:
+  * jonli og'zaki o'zbek tili, qisqa jumlalar (8-16 so'z), savol va undovlar bilan ritm ber
+    ("Bilasizmi?", "Mana shu yerda eng qizig'i!");
+  * 1-sahna kuchli hook, oxirgi sahna CTA (obuna, izoh, saqlash);
+  * emoji'siz; raqamlarni so'z bilan ("o'n ikki", "yigirma foiz"); inglizcha atamalarni
+    o'qilishicha yoz ("Klod Kod", "ey-ay"), ekranda esa heading'da asl yozilishi tursin;
+  * tinish belgilarini to'g'ri qo'y: vergul va nuqta diktorga nafas beradi.
+  So'zma-so'z subtitr ovozga aniq moslanadi. Fon musiqasi va ovoz effektlari (shuvillash, "pop",
+  klaviatura) avtomatik qo'shiladi; music: auto (uslubga qarab) yoki tech/bright/upbeat/
+  emotional/calm/none.
 - heading: qisqa sarlavha (3-7 so'z). *yulduzcha* ichidagi so'z urg'u rangida chiqadi:
   "Ular *buzishmaydi* — qidiradi". narration'da ham *so'z* bilan urg'u berish mumkin.
 - elements (sahnaga 0-2 ta) — namunalardagidek vizual bloklar:
@@ -65,7 +76,9 @@ Topshiriq to'liq aniq bo'lsa (uslub va ovoz aytilgan), savolsiz yasa.
   * code: {"type":"code","title":"app.js","lines":["$ npm run build","// izoh"]} (yoziladi)
   * number: {"type":"number","value":"13,889","suffix":"+","label":"izoh"} (sanab o'sadi)
   * chips: {"type":"chips","items":["#teg","OWASP"]}
-- emoji: sahnaga katta animatsiyali emoji; stickers: 1-3 ta suzuvchi emoji yoki image_id.
+- emoji: HAR sahnaga mos katta animatsiyali emoji qo'y (asosiy bezak shu). stickers maydoniga
+  ham faqat emoji yoz (1-2 ta, masalan ["✨","🔥"]). AI stikerlar/rasmlarni faqat foydalanuvchi
+  aniq so'rasa ishlat.
 - character: qahramon image_id (glass uslubida o'ng pastda, boshqalarida markazda).
 - variant: slides uchun "light" (och slayd), kinetic uchun yorug'lik rangi "#ff6a00".
 - accent: sahna urg'u rangi (hex), ixtiyoriy. classic uslubida bg_style va bg_colors ber,
@@ -73,8 +86,8 @@ Topshiriq to'liq aniq bo'lsa (uslub va ovoz aytilgan), savolsiz yasa.
 Uslublar bo'yicha maslahat: terminal - texnologiya/xavfsizlik/kod; glass - ta'lim, qahramon
 bilan; slides - qadamma-qadam qo'llanma, 01/10 ko'rinish; kinetic - his-tuyg'u, she'riy matn.
 
-## Shaxsiy emoji / qahramon
-Qahramon yoki emoji-stiker kerak bo'lsa, AVVAL avatar_sticker ishlat: u foydalanuvchining o'z
+## Shaxsiy qahramon (faqat so'ralsa)
+Foydalanuvchi qahramon / o'z obrazini so'rasa, avatar_sticker ishlat: u foydalanuvchining o'z
 rasmlaridan 3D multfilm uslubidagi qahramon yasaydi (masalan: "thinking, hand on chin",
 "pointing up, excited", "thumbs up, smiling", "surprised, hands on cheeks", "waving hello").
 Bitta videoda 2-4 xil poza ishlat (har sahnada boshqa poza = jonli video). Pozalar keshlanadi,
@@ -132,15 +145,16 @@ def _text(msg: str) -> dict[str, Any]:
 async def _narrate(scenes: list[Scene], voice_id: str, language: str) -> tuple[bytes, str]:
     """Synthesize each scene's narration, stretch durations to fit and time the caption words."""
     texts = [strip_markup(s.narration) for s in scenes]
-    clips, provider = await tts.synthesize_many(texts, voice_id, language)
+    clips, times, provider = await tts.synthesize_many(texts, voice_id, language)
     placed, start = [], 0.0
-    for scene, clip in zip(scenes, clips):
+    for scene, clip, bounds in zip(scenes, clips, times):
         if clip:
             seconds = tts.wav_duration(clip)
-            scene.duration = max(scene.duration, seconds + 0.9)
-            scene.words = narration_words(scene.narration, 0.3, seconds)
-            placed.append((start + 0.3, clip))
-        start += scene.duration
+            scene.duration = max(scene.duration, seconds + 0.8)
+            scene.words = align_words(scene.narration, 0.35, bounds, seconds)
+            placed.append((start + 0.35, clip))
+        # render kadr soniga yaxlitlaydi: ovoz bilan sinxron qolish uchun shu qiymatni ishlatamiz
+        start += int(scene.duration * 30) / 30
     return tts.build_track(placed, start), provider
 
 
@@ -150,10 +164,9 @@ def _image_ref(value: str) -> str | Path:
 
 
 def _voice_label(v: dict) -> str:
-    icon = "🆓" if v.get("free") else ("👩" if v.get("gender") == "female" else "👨" if v.get("gender") == "male" else "🎙")
+    icon = "👩" if v.get("gender") == "female" else "👨" if v.get("gender") == "male" else "🎙"
     name = v["name"].split("—")[0].strip()
-    desc = v.get("description", "")
-    return f"{icon} {name}" + (f" · {desc[:18]}" if desc and not v.get("free") else "")
+    return f"{icon} {name}"
 
 
 ELEMENT_SCHEMA = {
@@ -223,7 +236,7 @@ def _build_server(io: ChatIO):
     async def ask_voice(args: dict[str, Any]) -> dict[str, Any]:
         voices = await tts.list_uzbek_voices()
         labels = [_voice_label(v) for v in voices]
-        values = [f"Ovoz: {v['name']} (voice_id={v['id']})" for v in voices]
+        values = [f"Ovoz: {v['name']} — {v.get('description', '')} (voice_id={v['id']})" for v in voices]
         await io.ask(args.get("question") or "🎙 Diktor ovozini tanlang", labels, values, 2)
         return _text(f"{len(voices)} ta o'zbekcha ovoz tugmalari yuborildi. Tanlovni kut.")
 
@@ -322,6 +335,8 @@ def _build_server(io: ChatIO):
                 "scenes": {"type": "array", "items": SCENE_SCHEMA, "description": "Ordered scenes"},
                 "voice_id": {"type": "string", "description": "Voice id for narration"},
                 "language": {"type": "string", "description": "Narration language code (default uz)"},
+                "music": {"type": "string", "enum": ["auto", "tech", "bright", "upbeat", "emotional", "calm", "none"],
+                          "description": "Background music mood (auto = by theme)"},
             },
             "required": ["theme", "scenes"],
         },
@@ -361,7 +376,7 @@ def _build_server(io: ChatIO):
             except (tts.TTSError, httpx.HTTPError, OSError) as e:
                 log.exception("TTS xatosi")
                 note = f" Ovoz qo'shilmadi ({e})."
-        path = await asyncio.to_thread(render_motion_video, scenes, spec, audio)
+        path = await asyncio.to_thread(render_motion_video, scenes, spec, audio, args.get("music", "auto"))
         video_id = path.stem
         videos[video_id] = path
         await io.send_video(path, f"🎬 Video tayyor (id: {video_id})")

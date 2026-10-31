@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 import httpx
+import numpy as np
 from PIL import Image
 
 from . import config
@@ -41,12 +42,48 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {config.OPENAI_API_KEY}"}
 
 
-def _save(resp: httpx.Response, prefix: str, folder: Path = IMAGES_DIR, name: str = "") -> Path:
-    data = resp.json()
+GREEN_HINT = ("Place the subject on a perfectly flat, solid pure green (#00FF00) chroma-key background, "
+              "no shadows on the background, no green on the subject.")
+
+
+def _error(resp: httpx.Response) -> str | None:
+    try:
+        data = resp.json()
+    except ValueError:
+        return resp.text[:300]
     if resp.status_code >= 400 or "error" in data:
-        raise ImageError(data.get("error", {}).get("message", resp.text[:300]))
+        return data.get("error", {}).get("message", resp.text[:300])
+    return None
+
+
+def _transparency_unsupported(resp: httpx.Response) -> bool:
+    msg = (_error(resp) or "").lower()
+    return resp.status_code == 400 and ("transparent" in msg or "background" in msg)
+
+
+def chroma_key(png: bytes) -> bytes:
+    """Remove a pure green background -> transparent PNG (with green spill suppression)."""
+    img = np.asarray(Image.open(io.BytesIO(png)).convert("RGB"), dtype=np.float32)
+    r, g, b = img[..., 0], img[..., 1], img[..., 2]
+    green = g - np.maximum(r, b)
+    alpha = 1 - np.clip((green - 25) / 70, 0, 1)
+    g_fixed = np.where(green > 0, np.maximum(r, b) + green * 0.15 * alpha, g)  # yashil hoshiyani yo'qotish
+    rgba = np.dstack([r, np.minimum(g, g_fixed), b, alpha * 255]).astype(np.uint8)
+    out = Image.fromarray(rgba, "RGBA")
+    bbox = out.getchannel("A").getbbox()
+    out = out.crop(bbox) if bbox else out
+    buf = io.BytesIO()
+    out.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _save(resp: httpx.Response, prefix: str, folder: Path = IMAGES_DIR, name: str = "", key_green: bool = False) -> Path:
+    err = _error(resp)
+    if err:
+        raise ImageError(err)
     path = folder / (name or f"{prefix}_{uuid.uuid4().hex[:10]}.png")
-    path.write_bytes(base64.b64decode(data["data"][0]["b64_json"]))
+    png = base64.b64decode(resp.json()["data"][0]["b64_json"])
+    path.write_bytes(chroma_key(png) if key_green else png)
     return path
 
 
@@ -66,7 +103,13 @@ async def generate(prompt: str, kind: str) -> Path:
     }
     async with httpx.AsyncClient(timeout=240) as client:
         resp = await client.post(f"{API}/generations", json=body, headers=_headers())
-    return _save(resp, kind[:2])
+        key = False
+        if kind != "background" and _transparency_unsupported(resp):
+            # Shaffof fon qo'llanmasa: yashil fonda chizdirib, o'zimiz kesamiz
+            body.update(background="opaque", prompt=f"{body['prompt']}. {GREEN_HINT}")
+            resp = await client.post(f"{API}/generations", json=body, headers=_headers())
+            key = True
+    return _save(resp, kind[:2], key_green=key)
 
 
 # ---------- Shaxsiy avatar (foydalanuvchi rasmlaridan) ----------
@@ -136,9 +179,20 @@ async def avatar_sticker(pose: str) -> Path:
         "n": "1",
     }
     files = [("image[]", (p.stem + ".png", _upload_bytes(p), "image/png")) for p in photos]
+    key = False
     async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.post(f"{API}/edits", data=data, files=files, headers=_headers())
-        if resp.status_code == 400 and "input_fidelity" in resp.text:
-            data.pop("input_fidelity")
+        for _ in range(3):
             resp = await client.post(f"{API}/edits", data=data, files=files, headers=_headers())
-    return _save(resp, "av", config.AVATAR_CACHE_DIR, f"{_slug(pose)}.png")
+            msg = (_error(resp) or "").lower()
+            if resp.status_code != 400:
+                break
+            if "input_fidelity" in msg and "input_fidelity" in data:
+                data.pop("input_fidelity")
+            elif ("transparent" in msg or "background" in msg) and not key:
+                # edits shaffof fonni qo'llamaydi: yashil fonda chizdirib, keyin kesamiz
+                data["background"] = "opaque"
+                data["prompt"] = f"{data['prompt']} {GREEN_HINT}"
+                key = True
+            else:
+                break
+    return _save(resp, "av", config.AVATAR_CACHE_DIR, f"{_slug(pose)}.png", key_green=key)

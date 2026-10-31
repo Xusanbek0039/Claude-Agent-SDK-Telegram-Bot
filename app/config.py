@@ -48,8 +48,30 @@ FONT_PATH = os.getenv("FONT_PATH", "")
 # VoiceLab TTS (ovoz). Default: "Javohir — Bright presenter"
 VOICELAB_API_KEY = os.getenv("VOICELAB_API_KEY", "")
 VOICELAB_VOICE_ID = os.getenv("VOICELAB_VOICE_ID", "voice_fa56cecf-9b0b-45ba-9ec3-494efb5b301f")
-# auto: VoiceLab, kredit tugasa/xato bo'lsa bepul Edge TTS | voicelab | edge
-TTS_PROVIDER = os.getenv("TTS_PROVIDER", "auto").lower()
+# edge: Microsoft Neural o'zbekcha ovozlar (bepul, ravon) | voicelab: VoiceLab (kredit kerak)
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "edge").lower()
+# Default ovoz uslubi: sardor | sardor-energik | sardor-chuqur | madina | madina-quvnoq | madina-yumshoq
+TTS_VOICE = os.getenv("TTS_VOICE", "men")
+
+# Fish Audio: foydalanuvchining o'z ovozini klonlash (namuna yozuv + uning matni)
+FISH_API_KEY = os.getenv("FISH_API_KEY", "")
+FISH_MODEL = os.getenv("FISH_MODEL", "s2.1-pro-free")
+FISH_SPEED = float(os.getenv("FISH_SPEED", "1.0"))
+_ROOT_DIR = Path(__file__).resolve().parent.parent
+
+
+def _first_existing(*names: str) -> Path | None:
+    for n in names:
+        p = (_ROOT_DIR / n) if not Path(n).is_absolute() else Path(n)
+        if p.exists():
+            return p.resolve()
+    return None
+
+
+FISH_REFERENCE_AUDIO = (Path(os.environ["FISH_REFERENCE_AUDIO"]).resolve() if os.getenv("FISH_REFERENCE_AUDIO")
+                        else _first_existing("ovoz/namuna.ogg", "ovoz/namuna.m4a", "ovoz/namuna.wav", "ovoz/namuna.mp3"))
+FISH_REFERENCE_TEXT = (Path(os.environ["FISH_REFERENCE_TEXT"]).resolve() if os.getenv("FISH_REFERENCE_TEXT")
+                       else _first_existing("ovoz/namuna.txt"))
 
 # OpenAI rasm generatsiyasi (qahramonlar, stikerlar, fonlar) - ixtiyoriy
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

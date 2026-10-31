@@ -74,6 +74,12 @@ Elementlar: `cards`, `list`, `code`, `number`, `chips`. Shriftlar (Inter, JetBra
 
 Bot yaratgan har bir videoning o'ng pastki burchagiga `husanbek-coder.png` logosi qo'yiladi. Logo orqasida yarim shaffof to'q plashka bor, shuning uchun och fonda ham o'qiladi. Sozlamalar: `WATERMARK_PATH`, `WATERMARK_WIDTH`, `WATERMARK_OPACITY`. Render'da ishlashi uchun `husanbek-coder.png` repo'ga commit qilingan bo'lishi kerak.
 
+## Dublaj
+
+- **Diktor ovozi:** Microsoft Neural o'zbekcha ovozlari (bepul): Sardor va Madina, har biri oddiy, energik/quvnoq va chuqur/yumshoq uslublarda. Subtitr har bir so'zning aniq vaqti bo'yicha chiqadi. VoiceLab'ni yoqish uchun `TTS_PROVIDER=voicelab`.
+- **Fon musiqasi:** kodda sintez qilinadi (`app/audio.py`), mualliflik huquqi muammosi yo'q. Kayfiyat uslubga qarab tanlanadi: tech, bright, upbeat, emotional, calm. Diktor gapirganda musiqa avtomatik pasayadi.
+- **Ovoz effektlari:** sahna almashganda shuvillash, elementlar chiqqanda "pop", kod yozilganda klaviatura, raqam sanalganda "ding", outro oldidan riser va impact.
+
 ## Outro
 
 Har bir video oxiriga `husanbek-coder.mp4` (5 s) qo'shiladi. Uning qora foni shaffof qilinadi va logo oxirgi sahnaning foni ustida chiqadi. Video och bo'lsa, logodagi oq yozuv to'q rangga o'tadi, rangli nurlar o'zgarmaydi. Sozlama: `OUTRO_PATH`.

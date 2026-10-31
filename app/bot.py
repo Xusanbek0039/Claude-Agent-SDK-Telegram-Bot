@@ -13,6 +13,7 @@ from pathlib import Path
 from aiohttp import web
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
+from telegram.error import NetworkError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -176,11 +177,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(f"⚠️ Instagram xatosi: {e}")
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    err = context.error
+    if isinstance(err, NetworkError):  # TimedOut ham shu turga kiradi
+        # Internet bir lahza uzildi: PTB o'zi qayta ulanadi, uzun traceback shart emas
+        log.warning("Telegram bilan aloqa uzildi, qayta ulanmoqda: %s", err)
+        return
+    log.error("Kutilmagan xato", exc_info=err)
+
+
 def build_application(webhook: bool) -> Application:
-    builder = Application.builder().token(config.TELEGRAM_BOT_TOKEN).concurrent_updates(True)
+    builder = (
+        Application.builder()
+        .token(config.TELEGRAM_BOT_TOKEN)
+        .concurrent_updates(True)
+        .connect_timeout(20)
+        .read_timeout(30)
+        .write_timeout(120)  # katta videolarni yuborish uchun
+        .pool_timeout(20)
+    )
     if webhook:
         builder = builder.updater(None)
+    else:
+        builder = builder.get_updates_connect_timeout(20).get_updates_read_timeout(40)
     app = builder.build()
+    app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", my_id))
     app.add_handler(CommandHandler("new", new_chat))
@@ -240,7 +261,8 @@ def main() -> None:
         asyncio.run(run_webhook())
     else:
         log.info("Polling rejimi (lokal)")
-        build_application(webhook=False).run_polling(allowed_updates=Update.ALL_TYPES)
+        # bootstrap_retries=-1: ishga tushishda internet bo'lmasa ham to'xtamay qayta urinadi
+        build_application(webhook=False).run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
 
 
 if __name__ == "__main__":

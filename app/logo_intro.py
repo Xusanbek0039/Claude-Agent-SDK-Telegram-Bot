@@ -232,7 +232,7 @@ class LogoIntro:
 async def build(logo_path: Path, script: str = DEFAULT_SCRIPT, voice_id: str = "",
                 handle: str = "@husanbek_coder", url: str = "husanbek-coder.uz") -> Path:
     start = 2.7  # ovoz chaqnashdan keyin boshlanadi
-    clips, provider = await tts.synthesize_many([strip_markup(script)], voice_id or config.VOICELAB_VOICE_ID, "uz")
+    clips, _times, provider = await tts.synthesize_many([strip_markup(script)], voice_id, "uz")
     clip = clips[0]
     seconds = tts.wav_duration(clip)
     duration = max(14.0, start + seconds + 4.0)

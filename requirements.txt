@@ -6,3 +6,4 @@ pillow>=11.0
 python-dotenv>=1.0
 edge-tts>=7.0
 numpy>=1.26
+msgpack>=1.0

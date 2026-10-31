@@ -8,8 +8,10 @@ Uslublar (namunalar asosida):
 - classic:  rangli gradient / to'lqin / setka / bokeh fonlar
 """
 
+import colorsys
 import logging
 import math
+import random
 import re
 import subprocess
 import uuid
@@ -19,9 +21,9 @@ from pathlib import Path
 
 import httpx
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
-from . import config
+from . import audio, config
 
 log = logging.getLogger(__name__)
 
@@ -152,6 +154,39 @@ def parse_markup(text: str) -> list[tuple[str, bool]]:
 
 def strip_markup(text: str) -> str:
     return text.replace("*", "")
+
+
+def _norm(word: str) -> str:
+    return re.sub(r"[^\w]", "", word.lower().replace("ʻ", "").replace("'", "").replace("’", ""))
+
+
+def align_words(narration: str, offset: float, boundaries: list | None, clip_seconds: float
+                ) -> list[tuple[str, float, float, bool]]:
+    """Map TTS word boundaries (text, start, end) onto the narration words (keeps punctuation/markup).
+    Falls back to proportional timing when the boundaries cannot be matched."""
+    words = parse_markup(narration)
+    if not boundaries:
+        return narration_words(narration, offset, clip_seconds)
+    out, j = [], 0
+    for w, acc in words:
+        target = _norm(w)
+        if not target:  # faqat tinish belgisi: oldingi so'zga yopishtiramiz
+            if out:
+                prev = out[-1]
+                out[-1] = (prev[0] + w, prev[1], prev[2], prev[3])
+            continue
+        if j >= len(boundaries):
+            return narration_words(narration, offset, clip_seconds)
+        start = boundaries[j][1]
+        got = _norm(boundaries[j][0])
+        end = boundaries[j][2]
+        j += 1
+        while len(got) < len(target) and j < len(boundaries):
+            got += _norm(boundaries[j][0])
+            end = boundaries[j][2]
+            j += 1
+        out.append((w, offset + start, offset + end, acc))
+    return out
 
 
 def narration_words(narration: str, offset: float, clip_seconds: float) -> list[tuple[str, float, float, bool]]:
@@ -396,6 +431,39 @@ def _two_color(mask: Image.Image, c1: tuple, c2: tuple) -> Image.Image:
     return Image.composite(Image.new("RGB", (W, H), c2), Image.new("RGB", (W, H), c1), mask)
 
 
+def _shift_hue(color: tuple, amount: float) -> tuple:
+    h, l, s_ = colorsys.rgb_to_hls(*(c / 255 for c in color[:3]))
+    r, g, b = colorsys.hls_to_rgb((h + amount) % 1, l, s_)
+    return (int(r * 255), int(g * 255), int(b * 255))
+
+
+@lru_cache(maxsize=48)
+def _gradient_shape(size: int, c1: tuple, c2: tuple, kind: str, opacity: float) -> Image.Image:
+    """Translucent gradient shape sprite: circle / ring / rounded square / pill."""
+    grad = Image.linear_gradient("L").rotate(45, expand=True).resize((size, size))
+    color = Image.composite(Image.new("RGB", (size, size), c2), Image.new("RGB", (size, size), c1), grad)
+    mask = Image.new("L", (size, size), 0)
+    d = ImageDraw.Draw(mask)
+    m = size // 10
+    if kind == "ring":
+        d.ellipse((m, m, size - m, size - m), outline=255, width=size // 9)
+    elif kind == "square":
+        d.rounded_rectangle((m, m, size - m, size - m), size // 5, fill=255)
+    elif kind == "pill":
+        d.rounded_rectangle((m, size // 3, size - m, size - size // 3), size // 6, fill=255)
+    else:
+        d.ellipse((m, m, size - m, size - m), fill=255)
+    # yumshoq chet va shaffof gradient (bir tomoni xiraroq)
+    fade = Image.linear_gradient("L").rotate(-135, expand=True).resize((size, size)).point(lambda v: 90 + v * 165 // 255)
+    mask = ImageChops.multiply(mask.filter(ImageFilter.GaussianBlur(size // 60 + 2)), fade)
+    img = color.convert("RGBA")
+    img.putalpha(mask.point(lambda v: int(v * opacity)))
+    return img
+
+
+SHAPE_OPACITY = {"terminal": 0.16, "slides": 0.15, "kinetic": 0.2, "glass": 0.5, "classic": 0.3}
+
+
 class Background:
     def __init__(self, theme: Theme, scene: Scene, index: int):
         self.theme, self.scene, self.index = theme, scene, index
@@ -421,9 +489,25 @@ class Background:
                 self.base = _two_color(big.crop((left, top, left + W, top + H)), c1, c2)
             else:
                 self.base = _two_color(Image.linear_gradient("L").resize((W, H)), c1, c2)
+            self._make_shapes(theme, index)
             return
         self._themed_base(theme, index)
         self.base = self.base.convert("RGB")
+        self._make_shapes(theme, index)
+
+    def _make_shapes(self, theme: Theme, index: int) -> None:
+        rnd = random.Random(index * 7 + 3)
+        c1 = theme.glow if theme.name == "kinetic" else theme.accent
+        c2 = _shift_hue(c1, 0.12 + rnd.random() * 0.2)
+        opacity = SHAPE_OPACITY.get(theme.name, 0.2)
+        kinds = ["circle", "ring", "square", "pill"]
+        rnd.shuffle(kinds)
+        self.shapes = []
+        for k in range(3):
+            size = rnd.choice([380, 460, 560, 640])
+            sprite = _gradient_shape(size, c1 if k % 2 == 0 else c2, c2 if k % 2 == 0 else c1, kinds[k], opacity)
+            self.shapes.append((sprite, rnd.uniform(0.05, 0.95) * W, rnd.uniform(0.1, 0.9) * H,
+                                rnd.uniform(40, 120), rnd.uniform(0.15, 0.35), rnd.uniform(0, 6.28)))
 
     def _themed_base(self, theme: Theme, index: int) -> None:
         name = theme.name
@@ -455,6 +539,9 @@ class Background:
             return frame
         frame = self.base.copy()
         name, acc = self.theme.name, self.theme.accent
+        for sprite, x, y, amp, speed, ph in getattr(self, "shapes", []):
+            _paste(frame, sprite, x - sprite.width / 2 + math.sin(g * speed + ph) * amp,
+                   y - sprite.height / 2 + math.cos(g * speed * 0.8 + ph) * amp * 1.4)
         if name == "glass":
             for k, blob in enumerate(self.blobs):
                 cx = W * (0.25 + 0.5 * k / 2) + math.sin(g * 0.35 + k * 2.1) * 220
@@ -962,6 +1049,35 @@ class SceneRenderer:
         self.stickers = [img for img in (_asset(s) for s in scene.stickers[:4]) if img is not None]
         self._chrome_static()
 
+    def events(self) -> list[tuple[float, str]]:
+        """Sound-effect cues (seconds from scene start) matching the animations."""
+        ev: list[tuple[float, str]] = []
+        for block, _top in self.layout:
+            t0 = getattr(block, "t0", 0.1)
+            if isinstance(block, HeroBlock):
+                ev.append((t0 + 0.08, "pop"))
+            elif isinstance(block, HeadingBlock):
+                ev.append((t0, "swoosh"))
+            elif isinstance(block, CardsBlock):
+                ev += [(t0 + k * 0.18 + 0.05, "pop") for k in range(len(block.sprites))]
+            elif isinstance(block, ListBlock):
+                ev += [(t0 + k * 0.2 + 0.05, "pop") for k in range(len(block.sprites))]
+            elif isinstance(block, ChipsBlock):
+                ev += [(t0 + k * 0.1 + 0.05, "pop") for k in range(len(block.items))]
+            elif isinstance(block, CodeBlock):
+                typing = block.total_chars / 45
+                ev += [(t0 + 0.3 + k * 0.075, "tick") for k in range(int(typing / 0.075))]
+            elif isinstance(block, NumberBlock):
+                if block.target is not None:
+                    ev += [(t0 + k * 0.09, "tick") for k in range(13)]
+                ev.append((t0 + 1.3, "ding"))
+        if self.side_character is not None:
+            ev.append((0.15, "swoosh"))
+        ev += [(0.5 + k * 0.2, "pop") for k in range(len(self.stickers))]
+        if self.captions and self.captions.mode == "kinetic":
+            ev += [(w[1], "tick") for w in self.scene.words]
+        return [(t, k) for t, k in ev if t < self.scene.duration]
+
     def _chrome_static(self) -> None:
         """Header/footer that stay constant for the scene (drawn into the background base)."""
         base = getattr(self.bg, "base", None)
@@ -1104,21 +1220,41 @@ def _outro_frames(bg: "Background", last: Image.Image, g0: float):
         reader.wait()
 
 
-def render_motion_video(scenes: list[Scene], spec: VideoSpec | None = None, audio_wav: bytes | None = None) -> Path:
-    """Render scenes into an MP4 (optionally with a narration WAV track) and return its path."""
+def _outro_seconds() -> float:
+    path = config.OUTRO_PATH
+    if not path or not path.exists():
+        return 0.0
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                              str(path)], capture_output=True, text=True, check=True).stdout
+        return float(out.strip())
+    except (subprocess.CalledProcessError, ValueError):
+        return 0.0
+
+
+def render_motion_video(scenes: list[Scene], spec: VideoSpec | None = None, audio_wav: bytes | None = None,
+                        music: str | None = "auto") -> Path:
+    """Render scenes into an MP4 with a full soundtrack (narration + music bed + SFX) and return its path.
+    music: mood name (tech/bright/upbeat/emotional/calm), "auto" (by theme) or "none"."""
     spec = spec or VideoSpec()
     out = config.MEDIA_DIR / f"{uuid.uuid4().hex[:12]}.mp4"
     total_frames = sum(int(s.duration * FPS) for s in scenes)
+    renderers = [SceneRenderer(scene, spec, idx, len(scenes)) for idx, scene in enumerate(scenes)]
 
-    audio_path = None
-    if audio_wav:
-        audio_path = out.with_suffix(".wav")
-        audio_path.write_bytes(audio_wav)
-        # apad: ovoz tugagach jimlik, video (outro bilan) oxirigacha davom etadi
-        audio_input = ["-i", str(audio_path), "-af", "apad"]
-    else:
-        # Instagram uchun jim AAC audio trek
-        audio_input = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+    # Saundtrek: voqealar vaqt chizig'i
+    events, start = [], 0.0
+    for idx, (scene, r) in enumerate(zip(scenes, renderers)):
+        events.append((max(0.0, start - 0.12), "whoosh" if idx else "swoosh"))
+        events += [(start + t, kind) for t, kind in r.events()]
+        start += int(scene.duration * FPS) / FPS
+    outro = _outro_seconds()
+    if outro:
+        events += [(max(0.0, start - 1.1), "riser"), (start + 0.05, "impact")]
+    mood = audio.THEME_MOOD.get(spec.theme, "tech") if music in (None, "auto") else music
+    soundtrack = audio.mix(start + outro, audio_wav, events, mood)
+    audio_path = out.with_suffix(".wav")
+    audio_path.write_bytes(soundtrack)
+    audio_input = ["-i", str(audio_path)]
 
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
@@ -1133,8 +1269,7 @@ def render_motion_video(scenes: list[Scene], spec: VideoSpec | None = None, audi
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     frame_no = 0
     try:
-        for idx, scene in enumerate(scenes):
-            renderer = SceneRenderer(scene, spec, idx, len(scenes))
+        for scene, renderer in zip(scenes, renderers):
             for i in range(int(scene.duration * FPS)):
                 frame = renderer.render(i / FPS, frame_no / FPS, (frame_no + 1) / total_frames)
                 if mark is not None:
@@ -1149,8 +1284,7 @@ def render_motion_video(scenes: list[Scene], spec: VideoSpec | None = None, audi
     finally:
         proc.stdin.close()
         code = proc.wait()
-        if audio_path:
-            audio_path.unlink(missing_ok=True)
+        audio_path.unlink(missing_ok=True)
     if code != 0:
         raise RuntimeError(f"ffmpeg xatosi (kod {code})")
     return out
