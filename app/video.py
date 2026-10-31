@@ -5,7 +5,7 @@ import math
 import re
 import subprocess
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -18,6 +18,8 @@ log = logging.getLogger(__name__)
 
 W, H = 1080, 1920
 FPS = 30
+
+BG_STYLES = ("gradient", "diagonal", "radial", "waves", "grid", "bokeh", "image")
 
 FONT_CANDIDATES = [
     config.FONT_PATH,
@@ -35,6 +37,8 @@ EMOJI_RE = re.compile(
 EMOJI_DIR = config.MEDIA_DIR / "_emoji"
 EMOJI_DIR.mkdir(parents=True, exist_ok=True)
 
+STICKER_SLOTS = [(180, 300), (W - 180, 470), (170, H - 470), (W - 170, H - 330)]
+
 
 def _font(size: int) -> ImageFont.FreeTypeFont:
     for path in FONT_CANDIDATES:
@@ -44,7 +48,9 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
 
 
 def _hex(color: str) -> tuple[int, int, int]:
-    color = color.lstrip("#")
+    color = color.strip().lstrip("#")
+    if len(color) != 6:
+        return (124, 58, 237)
     return tuple(int(color[i : i + 2], 16) for i in (0, 2, 4))
 
 
@@ -66,6 +72,21 @@ def _emoji_image(emoji: str) -> Image.Image | None:
         return Image.open(path).convert("RGBA")
     log.warning("Emoji topilmadi: %r", emoji)
     return None
+
+
+@lru_cache(maxsize=64)
+def _file_image(path: str) -> Image.Image:
+    img = Image.open(path).convert("RGBA")
+    bbox = img.getchannel("A").getbbox()  # shaffof chetlarni kesib tashlaymiz
+    return img.crop(bbox) if bbox else img
+
+
+def _asset(ref: "str | Path") -> Image.Image | None:
+    """Emoji string or image file path -> RGBA image."""
+    if isinstance(ref, Path):
+        return _file_image(str(ref)) if ref.exists() else None
+    m = EMOJI_RE.search(ref)
+    return _emoji_image(m.group()) if m else None
 
 
 def _runs(text: str) -> list[tuple[bool, str]]:
@@ -92,6 +113,12 @@ class Scene:
     duration: float = 3.0
     emoji: str = ""
     narration: str = ""
+    bg_style: str = "gradient"
+    bg_colors: tuple[str, str] = ("#1e1b4b", "#7c3aed")
+    accent: str = "#facc15"
+    bg_image: Path | None = None
+    character: Path | None = None
+    stickers: list[str | Path] = field(default_factory=list)
 
 
 def _wrap(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
@@ -121,11 +148,6 @@ def _ease_out_back(t: float) -> float:
     return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2
 
 
-def _gradient(top: tuple, bottom: tuple) -> Image.Image:
-    mask = Image.linear_gradient("L").resize((W, H))
-    return Image.composite(Image.new("RGB", (W, H), bottom), Image.new("RGB", (W, H), top), mask)
-
-
 def _with_alpha(img: Image.Image, alpha: float) -> Image.Image:
     if alpha >= 1:
         return img
@@ -133,15 +155,79 @@ def _with_alpha(img: Image.Image, alpha: float) -> Image.Image:
     return Image.merge("RGBA", (r, g, b, a.point(lambda v: int(v * alpha))))
 
 
-def _draw_text_block(
-    canvas: Image.Image,
-    lines: list[str],
-    font: ImageFont.FreeTypeFont,
-    center_y: int,
-    alpha: float,
-    offset_y: float,
-    fill: tuple,
-) -> None:
+# ---------- Fonlar ----------
+
+def _two_color(mask: Image.Image, c1: tuple, c2: tuple) -> Image.Image:
+    return Image.composite(Image.new("RGB", (W, H), c2), Image.new("RGB", (W, H), c1), mask).convert("RGBA")
+
+
+def _static_background(scene: Scene) -> Image.Image:
+    c1, c2 = _hex(scene.bg_colors[0]), _hex(scene.bg_colors[1])
+    if scene.bg_style == "radial":
+        big = Image.radial_gradient("L").resize((int(H * 1.5), int(H * 1.5)))
+        left, top = (big.width - W) // 2, (big.height - H) // 2
+        return _two_color(big.crop((left, top, left + W, top + H)), c1, c2)
+    if scene.bg_style == "diagonal":
+        big = Image.linear_gradient("L").rotate(35, expand=True, fillcolor=128).resize((int(H * 1.6), int(H * 1.6)))
+        left, top = (big.width - W) // 2, (big.height - H) // 2
+        return _two_color(big.crop((left, top, left + W, top + H)), c1, c2)
+    return _two_color(Image.linear_gradient("L").resize((W, H)), c1, c2)
+
+
+class _BackgroundRenderer:
+    def __init__(self, scene: Scene):
+        self.scene = scene
+        self.acc = _hex(scene.accent)
+        self.photo = None
+        if scene.bg_style == "image" and scene.bg_image and scene.bg_image.exists():
+            img = Image.open(scene.bg_image).convert("RGB")
+            scale = max(W * 1.12 / img.width, H * 1.12 / img.height)
+            self.photo = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
+            # Matn o'qilishi uchun yumshoq qorong'i qatlam
+            shade = Image.linear_gradient("L").resize((W, H)).point(lambda v: int(60 + 0.35 * abs(v - 128)))
+            self.shade = Image.merge("RGBA", (*[Image.new("L", (W, H), 0)] * 3, shade))
+        self.base = _static_background(scene)
+
+    def frame(self, t: float, g: float) -> Image.Image:
+        style = self.scene.bg_style
+        if self.photo is not None:
+            # Ken Burns: sekin zoom va siljish
+            z = 1 + 0.08 * (t / max(self.scene.duration, 0.1))
+            cw, ch = int(self.photo.width / (1.12 * z) * 1.0), int(self.photo.height / (1.12 * z))
+            ox = int((self.photo.width - cw) / 2 + math.sin(g * 0.3) * 20)
+            oy = int((self.photo.height - ch) / 2)
+            frame = self.photo.crop((ox, oy, ox + cw, oy + ch)).resize((W, H), Image.BILINEAR).convert("RGBA")
+            frame.alpha_composite(self.shade)
+            return frame
+
+        frame = self.base.copy()
+        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        if style == "waves":
+            for k in range(3):
+                amp, base_y, speed = 70 + k * 25, H * (0.62 + k * 0.12), 0.8 + k * 0.35
+                pts = [(x, base_y + math.sin(x / 170 + g * speed + k) * amp) for x in range(0, W + 40, 40)]
+                d.polygon(pts + [(W, H), (0, H)], fill=(*self.acc, 45 + k * 15))
+        elif style == "grid":
+            step, off = 90, (g * 25) % 90
+            for gx in range(-1, W // step + 2):
+                for gy in range(-1, H // step + 2):
+                    x, y = gx * step + off, gy * step + off
+                    r = 5 + 3 * math.sin(g * 2 + gx * 0.7 + gy * 0.4)
+                    d.ellipse((x - r, y - r, x + r, y + r), fill=(*self.acc, 70))
+        elif style in ("bokeh", "gradient", "diagonal", "radial"):
+            circles = [(380, 40), (260, 55), (180, 35)] if style == "bokeh" else [(300, 28), (200, 22)]
+            for k, (r, a) in enumerate(circles):
+                cx = W / 2 + math.sin(g * 0.6 + k * 2.1) * 360
+                cy = H / 2 + math.cos(g * 0.45 + k * 1.7) * 640
+                d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(*self.acc, a))
+        frame.alpha_composite(layer)
+        return frame
+
+
+# ---------- Elementlar ----------
+
+def _draw_text_block(canvas, lines, font, center_y, alpha, offset_y, fill) -> None:
     if alpha <= 0:
         return
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -159,43 +245,47 @@ def _draw_text_block(
                     layer.alpha_composite(icon, (int(x), int(y - font.size * 0.05)))
                 x += font.size * 1.15
             else:
-                draw.text((x + 4, y + 6), chunk, font=font, fill=(0, 0, 0, 90))
-                draw.text((x, y), chunk, font=font, fill=(*fill, 255))
+                draw.text((x, y), chunk, font=font, fill=(*fill, 255),
+                          stroke_width=3, stroke_fill=(0, 0, 0, 110))
                 x += font.getlength(chunk)
         y += line_h
     canvas.alpha_composite(_with_alpha(layer, alpha))
 
 
-def _draw_hero_emoji(canvas: Image.Image, emoji: str, t: float, fade: float, g: float) -> None:
-    img = _emoji_image(emoji)
-    if img is None or fade <= 0:
+def _draw_hero(canvas, img: Image.Image, max_px: int, cy: float, t, fade, g, slide: bool) -> None:
+    if fade <= 0:
         return
     scale = _ease_out_back(t / 0.7)
-    size = int(320 * max(0.01, scale))
-    if size < 4:
+    ratio = max_px / max(img.width, img.height)
+    w, h = int(img.width * ratio * max(scale, 0.01)), int(img.height * ratio * max(scale, 0.01))
+    if w < 4 or h < 4:
         return
-    icon = img.resize((size, size), Image.LANCZOS).rotate(
-        math.sin(g * 2.2) * 6, resample=Image.BICUBIC, expand=True
-    )
-    cy = H // 2 - 460 + math.sin(g * 2.6) * 18
-    canvas.alpha_composite(
-        _with_alpha(icon, fade), (int((W - icon.width) / 2), int(cy - icon.height / 2))
-    )
+    icon = img.resize((w, h), Image.LANCZOS)
+    if not slide:
+        icon = icon.rotate(math.sin(g * 2.2) * 6, resample=Image.BICUBIC, expand=True)
+    y = cy + math.sin(g * 2.6) * 18 + (1 - _ease_out(t / 0.6)) * (300 if slide else 0)
+    canvas.alpha_composite(_with_alpha(icon, fade), (int((W - icon.width) / 2), int(y - icon.height / 2)))
 
 
-def render_motion_video(
-    scenes: list[Scene],
-    color_top: str = "#1e1b4b",
-    color_bottom: str = "#7c3aed",
-    accent: str = "#facc15",
-    text_color: str = "#ffffff",
-    audio_wav: bytes | None = None,
-) -> Path:
+def _draw_stickers(canvas, stickers: list[Image.Image], t, fade, g) -> None:
+    for k, (img, (sx, sy)) in enumerate(zip(stickers, STICKER_SLOTS)):
+        p = _ease_out_back((t - 0.5 - k * 0.2) / 0.5)
+        if p <= 0.02:
+            continue
+        size = int(170 * p)
+        icon = img.resize((size, int(size * img.height / img.width)), Image.LANCZOS)
+        icon = icon.rotate(math.sin(g * 1.8 + k) * 12, resample=Image.BICUBIC, expand=True)
+        y = sy + math.sin(g * 2 + k * 1.3) * 22
+        canvas.alpha_composite(
+            _with_alpha(icon, fade * 0.95), (int(sx - icon.width / 2), int(y - icon.height / 2))
+        )
+
+
+def render_motion_video(scenes: list[Scene], audio_wav: bytes | None = None, text_color: str = "#ffffff") -> Path:
     """Render scenes into an MP4 (optionally with a narration WAV track) and return its path."""
     out = config.MEDIA_DIR / f"{uuid.uuid4().hex[:12]}.mp4"
     title_font, sub_font = _font(92), _font(52)
-    top, bottom, acc, txt = _hex(color_top), _hex(color_bottom), _hex(accent), _hex(text_color)
-    base = _gradient(top, bottom).convert("RGBA")
+    txt = _hex(text_color)
     total_frames = sum(int(s.duration * FPS) for s in scenes)
 
     audio_path = None
@@ -221,37 +311,36 @@ def render_motion_video(
     try:
         for scene in scenes:
             n = int(scene.duration * FPS)
+            acc = _hex(scene.accent)
+            bg = _BackgroundRenderer(scene)
             title_lines = _wrap(scene.title, title_font, W - 160)
             sub_lines = _wrap(scene.subtitle, sub_font, W - 200) if scene.subtitle else []
-            hero = EMOJI_RE.search(scene.emoji)
+            character = _asset(scene.character) if scene.character else None
+            hero = character or (_asset(scene.emoji) if scene.emoji else None)
+            stickers = [img for img in (_asset(s) for s in scene.stickers[:4]) if img is not None]
+            title_y = H // 2 - 20 if character else H // 2 - 60
             for i in range(n):
                 t = i / FPS
-                fade_out = _ease_out((scene.duration - t) / 0.4)
-                frame = base.copy()
                 g = frame_no / FPS
+                fade_out = _ease_out((scene.duration - t) / 0.4)
+                frame = bg.frame(t, g)
 
-                # Harakatlanuvchi fon doiralari
-                deco = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-                d = ImageDraw.Draw(deco)
-                for k, (r, a) in enumerate([(380, 40), (260, 55), (180, 35)]):
-                    cx = W / 2 + math.sin(g * 0.6 + k * 2.1) * 360
-                    cy = H / 2 + math.cos(g * 0.45 + k * 1.7) * 640
-                    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(*acc, a))
-                frame.alpha_composite(deco)
-
-                # Katta emoji: "pop" bo'lib chiqadi va tebranib turadi
-                if hero:
-                    _draw_hero_emoji(frame, hero.group(), t, fade_out, g)
+                if stickers:
+                    _draw_stickers(frame, stickers, t, fade_out, g)
+                if hero is not None:
+                    if character:
+                        _draw_hero(frame, hero, 600, H // 2 - 470, t, fade_out, g, slide=True)
+                    else:
+                        _draw_hero(frame, hero, 320, H // 2 - 460, t, fade_out, g, slide=False)
 
                 # Sarlavha: pastdan ko'tarilib chiqadi
                 p = _ease_out((t - 0.15) / 0.6)
-                _draw_text_block(frame, title_lines, title_font, H // 2 - 60,
-                                 p * fade_out, (1 - p) * 120, txt)
+                _draw_text_block(frame, title_lines, title_font, title_y, p * fade_out, (1 - p) * 120, txt)
                 # Urg'u chizig'i
                 bw = int(320 * _ease_out((t - 0.45) / 0.5))
+                bar_y = title_y + (len(title_lines) * int(title_font.size * 1.25)) // 2 + 30
                 if bw > 0:
                     bar = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-                    bar_y = H // 2 - 60 + (len(title_lines) * int(title_font.size * 1.25)) // 2 + 30
                     ImageDraw.Draw(bar).rounded_rectangle(
                         ((W - bw) / 2, bar_y, (W + bw) / 2, bar_y + 12),
                         radius=6, fill=(*acc, int(255 * fade_out)))
@@ -259,8 +348,8 @@ def render_motion_video(
                 # Kichik matn: biroz kechikib chiqadi
                 if sub_lines:
                     q = _ease_out((t - 0.55) / 0.6)
-                    _draw_text_block(frame, sub_lines, sub_font, H // 2 + 260,
-                                     q * fade_out, (1 - q) * 80, txt)
+                    sub_y = bar_y + 60 + (len(sub_lines) * int(sub_font.size * 1.25)) // 2
+                    _draw_text_block(frame, sub_lines, sub_font, sub_y, q * fade_out, (1 - q) * 80, txt)
                 # Progress bar
                 prog = Image.new("RGBA", (W, H), (0, 0, 0, 0))
                 ImageDraw.Draw(prog).rectangle(

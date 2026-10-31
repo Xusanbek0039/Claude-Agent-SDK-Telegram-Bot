@@ -48,3 +48,10 @@ FONT_PATH = os.getenv("FONT_PATH", "")
 # VoiceLab TTS (ovoz). Default: "Javohir — Bright presenter"
 VOICELAB_API_KEY = os.getenv("VOICELAB_API_KEY", "")
 VOICELAB_VOICE_ID = os.getenv("VOICELAB_VOICE_ID", "voice_fa56cecf-9b0b-45ba-9ec3-494efb5b301f")
+# auto: VoiceLab, kredit tugasa/xato bo'lsa bepul Edge TTS | voicelab | edge
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "auto").lower()
+
+# OpenAI rasm generatsiyasi (qahramonlar, stikerlar, fonlar) - ixtiyoriy
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2")
+OPENAI_IMAGE_QUALITY = os.getenv("OPENAI_IMAGE_QUALITY", "medium")
