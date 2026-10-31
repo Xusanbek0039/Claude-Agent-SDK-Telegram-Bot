@@ -23,7 +23,8 @@ Foydalanuvchi bilan o'zbek tilida, qisqa va aniq gaplash.
 Imkoniyatlaring:
 - create_motion_video: vertikal (9:16) motion video yaratish. Har bir sahna qisqa, kuchli sarlavha
   (5-7 so'z) va ixtiyoriy kichik matndan iborat. Reels uchun 3-6 sahna, jami 10-25 soniya yaxshi.
-  Mavzuga mos rang palitrasini tanla (hex ranglar).
+  Mavzuga mos rang palitrasini tanla (hex ranglar). Video matnida emoji ishlatma (shrift
+  ularni ko'rsatmaydi); emoji faqat caption'da bo'lsin.
 - request_publish: tayyor videoni Instagram'ga chiqarish uchun foydalanuvchidan tasdiq so'rash.
   Caption'ni jozibali yoz: hook, qisqa matn, chaqiriq (CTA) va 5-10 ta mos hashtag.
 - get_instagram_account: akkaunt statistikasini ko'rish.
