@@ -63,3 +63,9 @@ AVATAR_DIR = Path(os.getenv("AVATAR_DIR", _ROOT / "husanbek")).resolve()
 AVATAR_CACHE_DIR = Path(os.getenv("AVATAR_CACHE_DIR", _ROOT / "avatar_cache")).resolve()
 AVATAR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 AVATAR_STYLE = os.getenv("AVATAR_STYLE", "Wearing a dark grey hoodie, modern young IT creator look")
+
+# Pechat: har bir videoning o'ng pastki burchagidagi logo (WATERMARK_PATH= bo'sh qoldirsangiz o'chadi)
+_wm = os.getenv("WATERMARK_PATH", str(_ROOT / "husanbek-coder.png"))
+WATERMARK_PATH = Path(_wm).resolve() if _wm else None
+WATERMARK_WIDTH = int(os.getenv("WATERMARK_WIDTH", "300"))
+WATERMARK_OPACITY = float(os.getenv("WATERMARK_OPACITY", "0.9"))

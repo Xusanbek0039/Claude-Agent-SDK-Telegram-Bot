@@ -1031,6 +1031,25 @@ class SceneRenderer:
         return frame
 
 
+@lru_cache(maxsize=1)
+def watermark() -> Image.Image | None:
+    """Brand stamp (pechat) for the bottom-right corner of every video, or None if not configured."""
+    path = config.WATERMARK_PATH
+    if not path or not path.exists():
+        return None
+    img = Image.open(path).convert("RGBA")
+    bbox = img.getchannel("A").getbbox()
+    img = img.crop(bbox) if bbox else img
+    w = config.WATERMARK_WIDTH
+    img = img.resize((w, max(1, int(img.height * w / img.width))), Image.LANCZOS)
+    # Yarim shaffof to'q plashka: oq logo och fonlarda ham o'qilsin
+    pad_x, pad_y = 18, 10
+    stamp = _rounded((img.width + pad_x * 2, img.height + pad_y * 2), (img.height + pad_y * 2) // 2,
+                     (8, 10, 24, 205), (255, 255, 255, 40), 2)
+    stamp.alpha_composite(img, (pad_x, pad_y))
+    return _with_alpha(stamp, config.WATERMARK_OPACITY)
+
+
 def render_motion_video(scenes: list[Scene], spec: VideoSpec | None = None, audio_wav: bytes | None = None) -> Path:
     """Render scenes into an MP4 (optionally with a narration WAV track) and return its path."""
     spec = spec or VideoSpec()
@@ -1055,6 +1074,7 @@ def render_motion_video(scenes: list[Scene], spec: VideoSpec | None = None, audi
         "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
         "-movflags", "+faststart", str(out),
     ]
+    mark = watermark()
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     frame_no = 0
     try:
@@ -1062,6 +1082,8 @@ def render_motion_video(scenes: list[Scene], spec: VideoSpec | None = None, audi
             renderer = SceneRenderer(scene, spec, idx, len(scenes))
             for i in range(int(scene.duration * FPS)):
                 frame = renderer.render(i / FPS, frame_no / FPS, (frame_no + 1) / total_frames)
+                if mark is not None:
+                    frame.paste(mark, (W - mark.width - 30, H - 135 - mark.height), mark)
                 proc.stdin.write(frame.convert("RGB").tobytes())
                 frame_no += 1
     finally:

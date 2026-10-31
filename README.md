@@ -70,6 +70,10 @@ Agar "Instagram Login" usuli bilan token olgan bo'lsangiz, `IG_GRAPH_HOST=graph.
 
 Elementlar: `cards`, `list`, `code`, `number`, `chips`. Shriftlar (Inter, JetBrains Mono, Anton) `app/fonts` papkasida, SIL Open Font License asosida.
 
+## Pechat (watermark)
+
+Bot yaratgan har bir videoning o'ng pastki burchagiga `husanbek-coder.png` logosi qo'yiladi. Logo orqasida yarim shaffof to'q plashka bor, shuning uchun och fonda ham o'qiladi. Sozlamalar: `WATERMARK_PATH`, `WATERMARK_WIDTH`, `WATERMARK_OPACITY`. Render'da ishlashi uchun `husanbek-coder.png` repo'ga commit qilingan bo'lishi kerak.
+
 ## Shaxsiy avatar
 
 `husanbek/` papkasidagi rasmlardan OpenAI (`gpt-image-2`) 3D qahramon-stikerlar yasaydi. Har bir poza `avatar_cache/` ga saqlanadi va qayta pul to'lanmaydi. `husanbek/` papkasi `.gitignore` da. Render'da yangi pozalar yaratilishi kerak bo'lsa, rasmlarni xususiy (private) repo orqali yuklang yoki `avatar_cache/` dagi tayyor pozalarni commit qiling.
