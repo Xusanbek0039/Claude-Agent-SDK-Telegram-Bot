@@ -55,7 +55,9 @@ Har bir savoldan keyin javobingni qisqa yakunla va tanlovni kut: u keyingi xabar
 Topshiriq to'liq aniq bo'lsa (uslub va ovoz aytilgan), savolsiz yasa.
 
 ## Video tuzilishi (create_motion_video) — namunalar uslubida
-- theme: terminal | glass | slides | kinetic | classic. Butun video bitta uslubda.
+- theme: terminal | glass | slides | kinetic | classic | warm | lime | minimal | neon | space | ember |
+  peach | retro | chatui | dialog | neonlab | monitor. Butun video bitta uslubda. Foydalanuvchi
+  /shablon orqali shablon tanlasa, xabar boshida [SHABLON: ...] ko'rsatmasi keladi - unga aniq amal qil.
 - handle: foydalanuvchi nikneymi (bilmasang so'ramasdan bo'sh qoldir), label: mavzu so'zi.
 - 5-10 sahna, har sahna 1 fikr. HAR sahnada narration bo'lsin — dublaj butun video bo'ylab
   uzluksiz, jonli va professional eshitilsin:
@@ -76,6 +78,10 @@ Topshiriq to'liq aniq bo'lsa (uslub va ovoz aytilgan), savolsiz yasa.
   * code: {"type":"code","title":"app.js","lines":["$ npm run build","// izoh"]} (yoziladi)
   * number: {"type":"number","value":"13,889","suffix":"+","label":"izoh"} (sanab o'sadi)
   * chips: {"type":"chips","items":["#teg","OWASP"]}
+  * diagram: {"type":"diagram","center":"Coordinator","nodes":["Frontend","Backend","Review"]}
+  * phone: {"type":"phone","title":"Biznes Bot","messages":[{"from":"user","text":"Narxi?"},{"from":"bot","text":"..."}]}
+  * steps: {"type":"steps","items":["Savol","Tanlov","Buyurtma"],"active":2}
+  * profile: {"type":"profile","name":"@handle","bio":"...","button":"Obuna bo'lish"} (oxirgi CTA sahna)
 - emoji: HAR sahnaga mos katta animatsiyali emoji qo'y (asosiy bezak shu). stickers maydoniga
   ham faqat emoji yoz (1-2 ta, masalan ["✨","🔥"]). AI stikerlar/rasmlarni faqat foydalanuvchi
   aniq so'rasa ishlat.
@@ -163,6 +169,14 @@ def _image_ref(value: str) -> str | Path:
     return generated_images.get(value.strip(), value)
 
 
+def _resolve_element(el: dict) -> dict:
+    """Map image ids inside elements (profile avatar) to file paths."""
+    el = dict(el)
+    if el.get("avatar") in generated_images:
+        el["avatar"] = str(generated_images[el["avatar"]])
+    return el
+
+
 def _voice_label(v: dict) -> str:
     icon = "👩" if v.get("gender") == "female" else "👨" if v.get("gender") == "male" else "🎙"
     name = v["name"].split("—")[0].strip()
@@ -180,6 +194,14 @@ ELEMENT_SCHEMA = {
         "prefix": {"type": "string"},
         "suffix": {"type": "string"},
         "label": {"type": "string", "description": "number: caption under the number"},
+        "center": {"type": "string", "description": "diagram: center node"},
+        "nodes": {"type": "array", "items": {"type": "string"}, "description": "diagram: child nodes (2-5)"},
+        "messages": {"type": "array", "description": "phone: [{from: 'user'|'bot', text}]"},
+        "active": {"type": "integer", "description": "steps: active step number (1-based)"},
+        "name": {"type": "string", "description": "profile: @handle"},
+        "bio": {"type": "string", "description": "profile: short bio"},
+        "button": {"type": "string", "description": "profile: button text"},
+        "avatar": {"type": "string", "description": "profile: image_id for the avatar"},
     },
     "required": ["type"],
 }
@@ -195,7 +217,8 @@ SCENE_SCHEMA = {
         "emoji": {"type": "string", "description": "One big animated emoji"},
         "character": {"type": "string", "description": "image_id of a character / avatar sticker"},
         "stickers": {"type": "array", "items": {"type": "string"}, "description": "Up to 3: emoji or image_ids"},
-        "variant": {"type": "string", "description": "slides: 'light'; kinetic: glow hex color"},
+        "variant": {"type": "string", "description": "slides/ember/minimal: 'light'; lime: '', 'lime', 'night'; kinetic: glow hex"},
+        "speaker": {"type": "string", "description": "dialog/neonlab: who is speaking (label above captions)"},
         "accent": {"type": "string", "description": "Accent hex color for this scene"},
         "bg_style": {"type": "string", "enum": list(BG_STYLES), "description": "classic theme only"},
         "bg_colors": {"type": "array", "items": {"type": "string"}, "description": "classic: two hex colors"},
@@ -351,7 +374,8 @@ def _build_server(io: ChatIO):
                 subheading=s.get("subheading", ""),
                 narration=s.get("narration", "").strip(),
                 duration=max(1.5, min(10.0, float(s.get("duration", 3)))),
-                elements=[e for e in s.get("elements", []) if isinstance(e, dict)][:2],
+                elements=[_resolve_element(e) for e in s.get("elements", []) if isinstance(e, dict)][:2],
+                speaker=s.get("speaker", ""),
                 emoji=s.get("emoji", ""),
                 character=generated_images.get(s.get("character", "")),
                 stickers=[_image_ref(x) for x in s.get("stickers", [])][:3],

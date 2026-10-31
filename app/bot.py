@@ -23,7 +23,7 @@ from telegram.ext import (
     filters,
 )
 
-from . import agent, config, instagram
+from . import agent, config, instagram, templates
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -44,7 +44,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Topshiriq yozing, masalan:\n"
         "• «Kofe do'konim uchun 15 soniyali motion video qil»\n"
         "• «Akkaunt statistikasi qanday?»\n\n"
-        "/new — yangi suhbat\n/id — Telegram ID'ingiz"
+        "/shablon — tayyor video shablonlari (18 ta)\n/new — yangi suhbat\n/id — Telegram ID'ingiz"
     )
 
 
@@ -121,11 +121,74 @@ async def _run_agent(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE
         await bot.send_message(chat_id, reply[i : i + 4000])
 
 
+# Shablon tanlagan, lekin hali mavzu yozmagan chatlar: chat_id -> shablon id
+pending_templates: dict[int, str] = {}
+PREVIEWS = Path(__file__).parent / "previews"
+
+
+def _templates_keyboard() -> InlineKeyboardMarkup:
+    buttons = [InlineKeyboardButton(t.name, callback_data=f"tpl:{t.id}") for t in templates.TEMPLATES]
+    return InlineKeyboardMarkup([buttons[i : i + 2] for i in range(0, len(buttons), 2)])
+
+
+async def shablon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _allowed(update):
+        await update.message.reply_text(f"⛔ Ruxsat yo'q. Sizning ID: {update.effective_user.id}")
+        return
+    await update.message.reply_text(
+        "🎬 Video shablonini tanlang.\nHar biri namunalardagi videolar uslubida tayyorlanadi:",
+        reply_markup=_templates_keyboard(),
+    )
+
+
+async def handle_template(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not _allowed(update):
+        await query.answer("Ruxsat yo'q", show_alert=True)
+        return
+    await query.answer()
+    chat_id = update.effective_chat.id
+    tid = query.data.split(":", 1)[1]
+    if tid == "list":
+        await context.bot.send_message(chat_id, "🎬 Shablonni tanlang:", reply_markup=_templates_keyboard())
+        return
+    if tid == "cancel":
+        pending_templates.pop(chat_id, None)
+        await query.edit_message_reply_markup(None)
+        await context.bot.send_message(chat_id, "❌ Shablon bekor qilindi.")
+        return
+    t = templates.BY_ID.get(tid)
+    if t is None:
+        return
+    pending_templates[chat_id] = t.id
+    text = (f"{t.name}  ·  {t.sample}-namuna uslubi\n\n"
+            f"🎞 Video qanday chiqadi:\n{t.description}\n\n"
+            f"📝 Buyruq namunasi:\n«{t.example}»\n\n"
+            f"✍️ Endi video mavzusini yoki matnini yozing (ovozli xabar emas, matn).")
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("↩️ Boshqa shablon", callback_data="tpl:list"),
+        InlineKeyboardButton("❌ Bekor qilish", callback_data="tpl:cancel"),
+    ]])
+    preview = PREVIEWS / f"{t.id}.jpg"
+    if preview.exists() and len(text) <= 1024:
+        with preview.open("rb") as f:
+            await context.bot.send_photo(chat_id, f, caption=text, reply_markup=keyboard)
+    else:
+        await context.bot.send_message(chat_id, text, reply_markup=keyboard)
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _allowed(update):
         await update.message.reply_text(f"⛔ Ruxsat yo'q. Sizning ID: {update.effective_user.id}")
         return
-    await _run_agent(update.effective_chat.id, update.message.text, context)
+    chat_id = update.effective_chat.id
+    tid = pending_templates.pop(chat_id, None)
+    if tid and tid in templates.BY_ID:
+        t = templates.BY_ID[tid]
+        await update.message.reply_text(f"⏳ «{t.name}» shablonida video tayyorlanmoqda (1-3 daqiqa)...")
+        await _run_agent(chat_id, templates.agent_prompt(t, update.message.text), context)
+        return
+    await _run_agent(chat_id, update.message.text, context)
 
 
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -177,6 +240,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(f"⚠️ Instagram xatosi: {e}")
 
 
+async def _set_commands(app: Application) -> None:
+    from telegram import BotCommand
+
+    try:
+        await app.bot.set_my_commands([
+            BotCommand("shablon", "Tayyor video shablonlari"),
+            BotCommand("new", "Yangi suhbat"),
+            BotCommand("start", "Yo'riqnoma"),
+            BotCommand("id", "Telegram ID"),
+        ])
+    except Exception as e:  # tarmoq yo'q bo'lsa ham bot ishlayversin
+        log.warning("Buyruqlar menyusi o'rnatilmadi: %s", e)
+
+
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     err = context.error
     if isinstance(err, NetworkError):  # TimedOut ham shu turga kiradi
@@ -200,11 +277,13 @@ def build_application(webhook: bool) -> Application:
         builder = builder.updater(None)
     else:
         builder = builder.get_updates_connect_timeout(20).get_updates_read_timeout(40)
-    app = builder.build()
+    app = builder.post_init(_set_commands).build()
     app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", my_id))
     app.add_handler(CommandHandler("new", new_chat))
+    app.add_handler(CommandHandler("shablon", shablon))
+    app.add_handler(CallbackQueryHandler(handle_template, pattern=r"^tpl:"))
     app.add_handler(CallbackQueryHandler(handle_answer, pattern=r"^ask:"))
     app.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^(pub|cancel):"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

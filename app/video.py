@@ -472,11 +472,13 @@ def _scene_theme(base: Theme, scene: Scene) -> Theme:
 # ---------- Fonlar ----------
 
 def _grid(img: Image.Image, step: int, color: tuple) -> None:
-    d = ImageDraw.Draw(img, "RGBA")
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
     for x in range(0, W, step):
         d.line((x, 0, x, H), fill=color)
     for y in range(0, H, step):
         d.line((0, y, W, y), fill=color)
+    img.alpha_composite(layer)
 
 
 def _vignette(img: Image.Image, strength: int) -> None:
@@ -510,10 +512,12 @@ def _glow_spot(img: Image.Image, center: tuple, size: int, color: tuple, strengt
 
 def _stars(img: Image.Image, count: int, seed: int) -> None:
     rnd = random.Random(seed + 101)
-    d = ImageDraw.Draw(img, "RGBA")
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
     for _ in range(count):
         x, y, r = rnd.uniform(0, W), rnd.uniform(0, H), rnd.choice([1, 1, 1.5, 2, 2.5])
         d.ellipse((x - r, y - r, x + r, y + r), fill=(255, 255, 255, rnd.randint(60, 220)))
+    img.alpha_composite(layer)
 
 
 def _two_color(mask: Image.Image, c1: tuple, c2: tuple) -> Image.Image:
@@ -648,7 +652,8 @@ class Background:
                 _glow_spot(self.base, (W // 2, int(H * 0.5)), 1500, theme.accent, 70)
                 _vignette(self.base, 140)
         elif name == "retro":
-            d = ImageDraw.Draw(self.base, "RGBA")
+            ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            d = ImageDraw.Draw(ov)
             cx, cy = W // 2, int(H * 0.56)
             for k in range(1, 16):
                 rx, ry = k * 110, k * 38
@@ -657,9 +662,11 @@ class Background:
                 a = k / 28 * math.tau
                 d.line((cx, cy, cx + math.cos(a) * 2200, cy + math.sin(a) * 2200), fill=(*theme.fg, 16), width=2)
             d.ellipse((W * 0.08, H * 0.1, W * 0.92, H * 0.1 + W * 0.84), outline=(*theme.accent, 60), width=4)
+            self.base.alpha_composite(ov)
         elif name == "dialog":
             rnd = random.Random(5)
-            d = ImageDraw.Draw(self.base, "RGBA")
+            ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            d = ImageDraw.Draw(ov)
             f = font("mono", 24)
             tokens = ["const", "return", "await", "import", "function", "=>", "{ }", "if", "else", "agent",
                       "model", "voice", "clone()", "render", "async", "data", "[]", "true", "null", "export"]
@@ -669,11 +676,13 @@ class Background:
                     tok = rnd.choice(tokens)
                     d.text((x, y), tok, font=f, fill=(70, 100, 170, rnd.randint(25, 60)))
                     x += f.getlength(tok) + rnd.randint(20, 70)
+            self.base.alpha_composite(ov)
             self.base = self.base.filter(ImageFilter.GaussianBlur(1.6))
             _vignette(self.base, 170)
         elif name == "neonlab":
             rnd = random.Random(9)
-            d = ImageDraw.Draw(self.base, "RGBA")
+            ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            d = ImageDraw.Draw(ov)
             for row in range(5):
                 for col in range(14):
                     if rnd.random() < 0.7:
@@ -681,13 +690,16 @@ class Background:
                         d.rectangle((x, y, x + 60, y + 52), fill=(50, 110, 255, rnd.randint(60, 150)))
             for y in (470, 1380):
                 d.rectangle((0, y, W, y + 6), fill=(255, 140, 30, 200))
-                _glow_spot(self.base, (W // 2, y), 900, (255, 140, 30), 40)
             cx, cy = W // 2, 1500
             for k in range(-10, 11):
                 d.line((cx, cy, cx + k * 220, H), fill=(80, 140, 255, 40), width=2)
+            self.base.alpha_composite(ov)
+            for y in (470, 1380):
+                _glow_spot(self.base, (W // 2, y), 900, (255, 140, 30), 40)
             _vignette(self.base, 120)
         elif name == "monitor":
             _stars(self.base, 120, index)
+            self.base = self.base.convert("RGB")  # RGB'da ImageDraw "RGBA" rejimi to'g'ri aralashtiradi
             d = ImageDraw.Draw(self.base, "RGBA")
             for y in range(1560, H):
                 k = (y - 1560) / (H - 1560)
@@ -697,6 +709,7 @@ class Background:
             d.rounded_rectangle((60, 150, W - 60, 860), 10, fill=(14, 18, 32, 255))
             d.text((90, 185), "Kontekst", font=font("sans_bold", 28), fill=(220, 220, 230, 255), anchor="lm")
             d.rectangle((250, 182, W - 90, 188), fill=(230, 60, 60, 255))
+            self.base = self.base.convert("RGBA")
         elif name == "chatui":
             pass
 
@@ -881,8 +894,21 @@ class TextBlock(Block):
     def __init__(self, text: str, theme: Theme, t0: float, size: int = 44):
         self.theme, self.t0 = theme, t0
         fnt = font(theme.body_font, size)
-        lines = _wrap_words([(w,) for w in text.split()], fnt, W - 2 * MARGIN - 40)
-        self.sprites = [_text_sprite(" ".join(w for (w,) in line), fnt, (*theme.dim, 255)) for line in lines]
+        bold = font(theme.body_bold, size)
+        lines = _wrap_words(parse_markup(text), fnt, W - 2 * MARGIN - 40)
+        self.sprites = []
+        space = fnt.getlength(" ")
+        for line in lines:
+            widths = [(bold if acc else fnt).getlength(w) for w, acc in line]
+            sp = Image.new("RGBA", (int(sum(widths) + space * len(line)) + 10, int(size * 1.35) + 6), (0, 0, 0, 0))
+            dr = ImageDraw.Draw(sp)
+            x = 0.0
+            for (w, acc), wd in zip(line, widths):
+                dr.text((x, 0), w, font=bold if acc else fnt, fill=(*(theme.fg if acc else theme.dim), 255))
+                if acc:
+                    dr.rectangle((x, size * 1.18, x + wd, size * 1.18 + 4), fill=(*theme.fg, 255))
+                x += wd + space
+            self.sprites.append(sp)
         self.line_h = int(size * 1.35)
         self.height = len(self.sprites) * self.line_h
 
@@ -1831,7 +1857,7 @@ class SceneRenderer:
         elif th.name in ("neon",) and spec.label:
             d.text((W / 2, 120), "  ".join(spec.label.upper()), font=font("sans_bold", 24), fill=(*th.dim, 255), anchor="mm")
         elif th.name == "space":
-            d.text((MARGIN, 90), "✦ " + (spec.label or spec.handle or ""), font=font("sans_bold", 28),
+            d.text((MARGIN, 90), "+  " + (spec.label or spec.handle or ""), font=font("sans_bold", 28),
                    fill=(*th.dim, 255), anchor="lm")
         elif th.name == "ember":
             hf = font("mono_bold", 26)
@@ -1852,7 +1878,9 @@ class SceneRenderer:
             cw = cf.getlength(cmd) + 40
             d.rounded_rectangle((W - MARGIN - cw, 160, W - MARGIN, 214), 14, fill=(*th.accent, 50))
             d.text((W - MARGIN - cw / 2, 187), cmd, font=cf, fill=(*th.accent, 255), anchor="mm")
-            d.text((MARGIN, 262), "✳", font=font("sans_black", 34), fill=(*th.accent, 255), anchor="lm")
+            star = _emoji_image("✳️")
+            if star is not None:
+                base.paste(star.resize((38, 38), Image.LANCZOS), (MARGIN, 243), star.resize((38, 38), Image.LANCZOS))
             d.text((MARGIN + 46, 262), f"Editing with {cmd.lstrip('/')}...", font=font("sans", 28),
                    fill=(*th.dim, 255), anchor="lm")
             d.rounded_rectangle((MARGIN, H - 210, W - MARGIN, H - 110), 34, fill=(42, 42, 42, 255),

@@ -57,6 +57,9 @@ TTS_VOICE = os.getenv("TTS_VOICE", "men")
 FISH_API_KEY = os.getenv("FISH_API_KEY", "")
 FISH_MODEL = os.getenv("FISH_MODEL", "s2.1-pro-free")
 FISH_SPEED = float(os.getenv("FISH_SPEED", "1.0"))
+# Ohang barqarorligi: past qiymat = xotirjam, toza ovoz (sinovda 0.55 / 0.6 eng yaxshi chiqdi)
+FISH_TEMPERATURE = float(os.getenv("FISH_TEMPERATURE", "0.55"))
+FISH_TOP_P = float(os.getenv("FISH_TOP_P", "0.6"))
 _ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -68,10 +71,10 @@ def _first_existing(*names: str) -> Path | None:
     return None
 
 
-FISH_REFERENCE_AUDIO = (Path(os.environ["FISH_REFERENCE_AUDIO"]).resolve() if os.getenv("FISH_REFERENCE_AUDIO")
-                        else _first_existing("ovoz/namuna.ogg", "ovoz/namuna.m4a", "ovoz/namuna.wav", "ovoz/namuna.mp3"))
-FISH_REFERENCE_TEXT = (Path(os.environ["FISH_REFERENCE_TEXT"]).resolve() if os.getenv("FISH_REFERENCE_TEXT")
-                       else _first_existing("ovoz/namuna.txt"))
+# Avval .env dagi yo'l (masalan Render: /etc/secrets/...), u yerda fayl bo'lmasa - lokal ovoz/ papkasi
+FISH_REFERENCE_AUDIO = _first_existing(*filter(None, [os.getenv("FISH_REFERENCE_AUDIO")]), "ovoz/namuna.ogg",
+                                       "ovoz/namuna.m4a", "ovoz/namuna.wav", "ovoz/namuna.mp3")
+FISH_REFERENCE_TEXT = _first_existing(*filter(None, [os.getenv("FISH_REFERENCE_TEXT")]), "ovoz/namuna.txt")
 
 # OpenAI rasm generatsiyasi (qahramonlar, stikerlar, fonlar) - ixtiyoriy
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

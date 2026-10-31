@@ -155,13 +155,13 @@ _fish_ref: tuple[bytes, str] | None = None
 
 
 def _fish_reference() -> tuple[bytes, str]:
-    """Reference sample (cleaned 44.1 kHz WAV, trimmed and loudness-normalized) + its transcript."""
+    """Reference sample (denoised 44.1 kHz WAV, leading silence trimmed) + its transcript.
+    Foydalanuvchi sinovda shu variantni (C_shovqinsiz) eng yaxshi deb tanladi; loudnorm buzilish berardi."""
     global _fish_ref
     if _fish_ref is None:
         proc = subprocess.run(
             ["ffmpeg", "-loglevel", "error", "-i", str(config.FISH_REFERENCE_AUDIO), "-af",
-             "silenceremove=start_periods=1:start_threshold=-45dB,areverse,"
-             "silenceremove=start_periods=1:start_threshold=-45dB,areverse,loudnorm=I=-18:TP=-2",
+             "highpass=f=80,afftdn=nf=-25,silenceremove=start_periods=1:start_threshold=-45dB",
              "-ar", "44100", "-ac", "1", "-f", "wav", "pipe:1"],
             capture_output=True, check=True)
         wav = _to_wav_rate(proc.stdout, 44100)
@@ -250,8 +250,8 @@ async def _fish(client: httpx.AsyncClient, text: str) -> tuple[bytes, WordTimes]
         "format": "wav",
         "latency": "normal",
         "normalize": False,
-        "temperature": 0.7,
-        "top_p": 0.7,
+        "temperature": config.FISH_TEMPERATURE,
+        "top_p": config.FISH_TOP_P,
         "prosody": {"speed": config.FISH_SPEED},
     }
     headers = {"Authorization": f"Bearer {config.FISH_API_KEY}", "Content-Type": "application/msgpack",
