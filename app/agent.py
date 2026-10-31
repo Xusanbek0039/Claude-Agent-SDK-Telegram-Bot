@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+import httpx
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ResultMessage,
@@ -19,8 +20,6 @@ from claude_agent_sdk import (
     query,
     tool,
 )
-
-import httpx
 
 from . import config, instagram, tts
 from .video import Scene, render_motion_video
