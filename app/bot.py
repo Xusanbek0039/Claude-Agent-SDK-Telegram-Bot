@@ -7,6 +7,7 @@ Lokal (PUBLIC_URL yo'q): polling rejimi.
 import asyncio
 import contextlib
 import logging
+import uuid
 from pathlib import Path
 
 from aiohttp import web
@@ -64,11 +65,11 @@ async def _keep_typing(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None
         await asyncio.sleep(4)
 
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _allowed(update):
-        await update.message.reply_text(f"⛔ Ruxsat yo'q. Sizning ID: {update.effective_user.id}")
-        return
-    chat_id = update.effective_chat.id
+# Agent bergan savollar: qid -> (savol, variantlar)
+questions: dict[str, tuple[str, list[str]]] = {}
+
+
+async def _run_agent(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE) -> None:
     bot = context.bot
 
     async def send_video(path: Path, caption: str) -> None:
@@ -77,19 +78,37 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await bot.send_video(chat_id, f, caption=caption, supports_streaming=True,
                                  read_timeout=120, write_timeout=120)
 
+    async def send_photo(path: Path, caption: str) -> None:
+        with path.open("rb") as f:
+            await bot.send_photo(chat_id, f, caption=caption, read_timeout=60, write_timeout=60)
+
     async def send_publish_request(post_id: str, path: Path, caption: str) -> None:
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Chiqarish", callback_data=f"pub:{post_id}"),
             InlineKeyboardButton("❌ Bekor qilish", callback_data=f"cancel:{post_id}"),
         ]])
         await bot.send_message(
-            chat_id, f"📤 Instagram'ga chiqaraymi?\n\n{caption}", reply_markup=keyboard
+            chat_id, f"📤 Instagram'ga chiqaraymi?
+
+{caption}", reply_markup=keyboard
+        )
+
+    async def ask(question: str, options: list[str]) -> None:
+        qid = uuid.uuid4().hex[:8]
+        questions[qid] = (question, options)
+        rows = [[InlineKeyboardButton(o, callback_data=f"ask:{qid}:{i}")] for i, o in enumerate(options)]
+        rows.append([InlineKeyboardButton("🎲 O'zing tanla", callback_data=f"ask:{qid}:auto")])
+        await bot.send_message(
+            chat_id, f"❓ {question}
+
+(Tugmani bosing yoki o'z variantingizni yozing)",
+            reply_markup=InlineKeyboardMarkup(rows),
         )
 
     typing = asyncio.create_task(_keep_typing(context, chat_id))
     try:
         reply = await agent.run(
-            chat_id, update.message.text, agent.ChatIO(send_video, send_publish_request)
+            chat_id, text, agent.ChatIO(send_video, send_photo, send_publish_request, ask)
         )
     except Exception as e:
         log.exception("Agent xatosi")
@@ -97,7 +116,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     finally:
         typing.cancel()
     for i in range(0, len(reply), 4000):
-        await update.message.reply_text(reply[i : i + 4000])
+        await bot.send_message(chat_id, reply[i : i + 4000])
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _allowed(update):
+        await update.message.reply_text(f"⛔ Ruxsat yo'q. Sizning ID: {update.effective_user.id}")
+        return
+    await _run_agent(update.effective_chat.id, update.message.text, context)
+
+
+async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not _allowed(update):
+        await query.answer("Ruxsat yo'q", show_alert=True)
+        return
+    _, qid, choice = query.data.split(":", 2)
+    await query.answer()
+    entry = questions.pop(qid, None)
+    if entry is None:
+        await query.edit_message_reply_markup(None)
+        return
+    question, options = entry
+    answer = "O'zing eng yaxshisini tanla" if choice == "auto" else options[int(choice)]
+    await query.edit_message_text(f"❓ {question}
+
+✅ {answer}")
+    await _run_agent(update.effective_chat.id, f"[{question}] javobim: {answer}", context)
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -137,7 +182,8 @@ def build_application(webhook: bool) -> Application:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", my_id))
     app.add_handler(CommandHandler("new", new_chat))
-    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(CallbackQueryHandler(handle_answer, pattern=r"^ask:"))
+    app.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^(pub|cancel):"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     return app
 
